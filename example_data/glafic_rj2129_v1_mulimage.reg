@@ -1,0 +1,41 @@
+# Region file format: DS9 version 4.1
+global color=green font="helvetica 8 normal roman"
+fk5
+circle(322.414923009227,0.0904155444444444,0.4") # width=2 text={1.1} color=magenta
+circle(322.415189398439,0.0889741555555555,0.4") # width=2 text={1.2} color=magenta
+circle(322.416653011325,0.0867530444444444,0.4") # width=2 text={1.3} color=magenta
+circle(322.414639397772,0.0923863777777778,0.4") # width=2 text={2.1} color=magenta
+circle(322.416294122001,0.0881022111111111,0.4") # width=2 text={2.2} color=magenta
+circle(322.416586066799,0.0877772111111111,0.4") # width=2 text={2.3} color=magenta
+circle(322.415951899363,0.0915111,0.4") # width=2 text={3.1} color=magenta
+circle(322.417343567718,0.0906622111111111,0.4") # width=2 text={3.2} color=magenta
+circle(322.416956067248,0.0903402666666667,0.4") # width=2 text={3.3} color=magenta
+circle(322.418568291425,0.0849277666666667,0.4") # width=2 text={3.4} color=magenta
+circle(322.415568565565,0.0921536,0.4") # width=2 text={4.1} color=magenta
+circle(322.417489401228,0.0901780444444444,0.4") # width=2 text={4.2} color=magenta
+circle(322.418426069031,0.0853786,0.4") # width=2 text={4.3} color=magenta
+circle(322.41797523515,0.0932719333333333,0.4") # width=2 text={5.1} color=magenta
+circle(322.420182182272,0.0897722111111111,0.4") # width=2 text={5.2} color=magenta
+circle(322.420407182544,0.0883141555555556,0.4") # width=2 text={5.3} color=magenta
+circle(322.41375856337,0.0941983222222222,0.4") # width=2 text={6.1} color=magenta
+circle(322.416739400318,0.0877613777777778,0.4") # width=2 text={6.2} color=magenta
+circle(322.416992178403,0.0873924888888889,0.4") # width=2 text={6.3} color=magenta
+circle(322.413726618887,0.0920863777777778,0.4") # width=2 text={7.1} color=magenta
+circle(322.414432175298,0.0886347111111111,0.4") # width=2 text={7.2} color=magenta
+circle(322.417540512401,0.0838683222222222,0.4") # width=2 text={7.3} color=magenta
+circle(322.420236349004,0.0936441555555556,0.4") # width=2 text={8.1} color=magenta
+circle(322.421553295045,0.0916938777777778,0.4") # width=2 text={8.2} color=magenta
+circle(322.422410518307,0.0889363777777778,0.4") # width=2 text={8.3} color=magenta
+circle(322.416344677617,0.0912444333333333,0.4") # width=2 text={9.1} color=magenta
+circle(322.416911622749,0.0905027666666667,0.4") # width=2 text={9.2} color=magenta
+circle(322.416119677345,0.0911277666666667,0.4") # width=2 text={10.1} color=magenta
+circle(322.416736344759,0.0904194333333333,0.4") # width=2 text={10.2} color=magenta
+circle(322.416319677587,0.0907944333333333,0.4") # width=2 text={11.1} color=magenta
+circle(322.416503288921,0.0905861,0.4") # width=2 text={11.2} color=magenta
+circle(322.413889119084,0.0922227666666667,0.4") # width=2 text={12.1} color=magenta
+circle(322.417255789834,0.0849144333333333,0.4") # width=2 text={12.2} color=magenta
+circle(322.414807453531,0.0884261,0.4") # width=2 text={12.3} color=magenta
+circle(322.41388078574,0.0930144333333333,0.4") # width=2 text={13.1} color=magenta
+circle(322.417072456278,0.0860144333333333,0.4") # width=2 text={13.2} color=magenta
+circle(322.414234952837,0.0914061,0.4") # width=2 text={14.1} color=magenta
+circle(322.418002457406,0.0833986,0.4") # width=2 text={14.2} color=magenta

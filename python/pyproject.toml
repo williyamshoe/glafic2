@@ -1,0 +1,26 @@
+# Pure-Python install of the JAX port only:   pip install ./python
+# (the C library and its python wrapper are still installed with the
+#  top-level setup.py / `make python`).
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "glafic-jax"
+version = "2.1.15+jax0"
+description = "Differentiable (JAX) port of the glafic gravitational lensing code"
+readme = "glafic_jax/README.md"
+requires-python = ">=3.10"
+license = {text = "GPL-3.0"}
+dependencies = ["jax>=0.4.30", "numpy", "scipy"]
+
+[project.optional-dependencies]
+fits = ["astropy"]
+hmc = ["numpyro", "blackjax"]
+test = ["pytest", "astropy"]
+
+[tool.setuptools]
+packages = ["glafic_jax", "glafic_jax.tools"]
+
+[tool.setuptools.package-data]
+glafic_jax = ["data/*.npz", "README.md"]

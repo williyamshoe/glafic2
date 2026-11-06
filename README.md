@@ -38,6 +38,16 @@ pip install .
 ```
 in the directory where `setup.py` is located to install glafic. Once glafic is installed, you can use glafic in your python scripts simply by importing the module as `import glafic`. 
 
+## Differentiable JAX port (glafic_jax)
+
+`python/glafic_jax` is a pure-Python/JAX port of the modelling core. It
+covers all lens models, multi-plane lensing, point and extended sources, the
+PSF, and priors. It reads the same input files, and its χ² is differentiable,
+so it can be used with gradient-based optimisers and HMC/NUTS samplers
+(NumPyro, BlackJAX). Install it with `pip install ./python`. See
+[python/glafic_jax/README.md](python/glafic_jax/README.md) and
+`examples_jax/hmc_point.py`.
+
 ## Feedback
 
 If you have any questions, suggestions, or comments regarding glafic, please contact [Masamune Oguri](https://oguri.github.io/).
