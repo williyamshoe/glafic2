@@ -55,16 +55,16 @@ published cluster models, including the paper:
   magnification tensor of the lens model.
 * The source positions are **integrated out analytically**:
   χ² → χ²_min + ln det M. This removes 28 nuisance parameters.
-* A **magnification cap** (`mag_cap`) bounds the weight of strongly magnified
-  images. The weight 1/μ⁻¹ is replaced by μ⁻¹/(μ⁻¹² + ε²) with ε = 1/(2 μ_cap),
-  so |μ| ≤ μ_cap. Several images (systems 3, 6, 11) lie almost on critical
-  curves, where the uncapped χ² has spikes that HMC cannot traverse. Without
-  the cap, test chains did not mix (R-hat 1.8). With μ_cap = 10 they are clean.
-* Positional errors are **rescaled for each cap**, so the ΛCDM best fit has
+* Positional errors are **rescaled** so that the ΛCDM best fit has
   χ²/dof = 1, the convention of the paper.
 
-The cap changes the likelihood, so the cosmology is re-run with a second
-value (stage E) to check that the result does not depend on the choice.
+The μ² weighting in this χ² is what stops a model from placing images on
+critical curves, where any image offset maps to a tiny source-plane residual.
+Some images (systems 3, 6, 11) really do lie close to critical curves, so the
+likelihood is sharply peaked there and NUTS needs long warmup and a high
+target acceptance. Do **not** use `mag_cap`: capping the magnification
+removes that protection. The capped MAP puts nearly every image at |μ| > 30
+and misses the observed positions by up to 60″.
 
 ### Stages
 
@@ -73,16 +73,16 @@ stages.
 
 | stage | what | cost (laptop CPU) |
 |---|---|---|
-| A | ΛCDM best fit for each cap; error calibration; image check with glafic's exact image finder | ~5 min per cap |
-| B | ΛCDM NUTS | ~1–2 h |
-| C | ΛCDM AIES (gradient-free) to validate NUTS | ~10 min |
-| D | w0waCDM NUTS | ~2–3 h |
-| E | w0waCDM NUTS at a second magnification cap | ~2–3 h |
-| F | cosmology results, cap comparison, posterior-predictive check | minutes |
+| A | ΛCDM MAP; error calibration; image check with glafic's exact image finder | ~5 min |
+| B | ΛCDM NUTS | hours |
+| C | ΛCDM AIES (gradient-free) to validate NUTS | ~30 min |
+| D | w0waCDM NUTS | hours |
+| E | cosmology results and posterior-predictive check | minutes |
 
 The `RUN_*` flags in the next cell run only some stages, for example one per
-batch job. The samplers write a checkpoint every `chunk` samples, so a job
-that hits its time limit resumes where it stopped.
+batch job; `RUN_A` alone checks the MAP in a few minutes. The samplers write
+a checkpoint every `chunk` samples, so a job that hits its time limit resumes
+where it stopped.
 """)
 
 code(r"""
@@ -106,17 +106,17 @@ print("jax", jax.__version__, "| backend:", jax.default_backend(), "| devices:",
 
 # ---------------- configuration ----------------
 MPOLES = [(3, 2)]                 # (m, n) multipoles centred on the BCG
-MAG_CAP = 10.0                    # main analysis
-CAP_CHECK = 30.0                  # sensitivity check (stage E); None to skip
+MAG_CAP = 0.0                     # 0 = glafic's exact source-plane chi2 (do not cap; see above)
 POS_ERR0 = 0.4                    # catalogue positional error [arcsec], before rescaling
 CALIBRATE_ERRORS = True           # rescale errors so that the LCDM best fit has chi2/dof = 1
+N_STARTS = 16                     # jittered L-BFGS starts for the MAP
 REPARAM = {"lens1_anfw_p2": "log10",          # halo mass: flat in log10 M
            "lens2_gals_p7": "log10"}          # member truncation radius: flat in log10
 COSMO_REPARAM = {"wa": ("offset", "weos", -3.0, 0.0)}   # sample w0 + wa in [-3, 0)
-NUTS_KW = dict(num_chains=4, num_warmup=1000, num_samples=1000, target_accept=0.9,
-               max_tree_depth=8, init="map", init_jitter=0.005, use_approx_mass=False, chunk=250)
-AIES_KW = dict(num_warmup=4000, num_samples=4000, thinning=4, init_jitter=0.005, chunk=1000)
-RUN_A, RUN_B, RUN_C, RUN_D, RUN_E = True, True, True, True, True
+NUTS_KW = dict(num_chains=4, num_warmup=1000, num_samples=1000, target_accept=0.95,
+               max_tree_depth=8, init="map", init_jitter=0.01, use_approx_mass=False, chunk=250)
+AIES_KW = dict(num_warmup=5000, num_samples=5000, thinning=5, init_jitter=0.005, chunk=1000)
+RUN_A, RUN_B, RUN_C, RUN_D = True, True, True, True
 SMOKE_TEST = False                # tiny runs, to check that the notebook works end to end
 
 if SMOKE_TEST:
@@ -185,18 +185,16 @@ def load_npz(path):
 md(r"""
 ## 2. Stage A: ΛCDM best fit and error calibration
 
-For each magnification cap:
-
 1. **Best fit.** Minimise the source-plane χ² over the lens parameters and
-   photometric redshifts, with source positions profiled, from 16 jittered
-   starts.
+   photometric redshifts, with source positions profiled, from `N_STARTS`
+   jittered starts.
 2. **Error calibration.** All images share one positional error σ, and the
    χ² scales as 1/σ². Setting σ = σ₀ √(χ²/dof) makes χ²/dof = 1 exactly,
    without changing the best fit.
 """)
 
 code(r"""
-def stage_a(cap, start=None, n_starts=16):
+def stage_a(cap, start=None, n_starts=N_STARTS):
     f = os.path.join(capdir(cap), "calib.json")
     if os.path.exists(f):
         return json.load(open(f))
@@ -214,12 +212,9 @@ def stage_a(cap, start=None, n_starts=16):
     return out
 
 
-calib = {}
-if RUN_A:
-    calib[MAG_CAP] = stage_a(MAG_CAP)
-    if CAP_CHECK:
-        c0 = calib[MAG_CAP]
-        calib[CAP_CHECK] = stage_a(CAP_CHECK, start=dict(lens=c0["lens"], poi=c0["poi"]), n_starts=4)
+t0 = time.time()
+calib = {MAG_CAP: stage_a(MAG_CAP)}
+print(f"stage A: {time.time() - t0:.0f} s")
 for cap, c in calib.items():
     m = make_model(cap, lens=c["lens"], poi=c["poi"]); m.set_source_mode("profile")
     c2 = float(m.chi2(m.params()))
@@ -246,17 +241,26 @@ for zs, col in ((1.52, "tab:blue"), (3.08, "tab:green"), (9.51, "tab:red")):
     mu = jax.jit(lambda x, y: m.lensmodel(x, y, zs, P).muinv)(jnp.asarray(X), jnp.asarray(Y))
     ax.contour(X, Y, np.asarray(mu), levels=[0.0], colors=col, linewidths=0.8)
     ax.plot([], [], color=col, label=f"critical curve z_s={zs}")
-offs = []
+offs, mus, missing = [], [], []
 for i in range(m.num_poi):
     obs = m.obs_point[i]["tab"]; pred = m.findimg(i + 1)
-    o = [np.sqrt(((pred[:, :2] - p[:2]) ** 2).sum(1).min()) for p in obs]; offs += o
+    o = [np.sqrt(((pred[:, :2] - p[:2]) ** 2).sum(1).min()) if len(pred) else np.inf for p in obs]; offs += o
+    mu = np.abs(1 / np.asarray(m.lensmodel(jnp.asarray(obs[:, 0]), jnp.asarray(obs[:, 1]),
+                                           float(P["point"][i, 0]), P).muinv)); mus += list(mu)
+    if pred.shape[0] < obs.shape[0]:
+        missing.append(i + 1)
     print(f"system {i+1:2d} (z={P['point'][i,0]:.3f}): {obs.shape[0]} observed / {pred.shape[0]} predicted, "
-          f"offsets {np.round(o, 2)}")
+          f"offsets {np.round(o, 2)}, |μ| {np.round(mu, 1)}")
     ax.scatter(obs[:, 0], obs[:, 1], marker="o", facecolor="none", edgecolor="k", s=45)
     ax.scatter(pred[:, 0], pred[:, 1], marker="x", color=cmap(i % 20), s=30)
 ax.set_xlim(35, -35); ax.set_ylim(-35, 35); ax.set_aspect("equal"); ax.legend(fontsize=8)
 plt.show()
-print(f"image-plane rms = {np.sqrt(np.mean(np.square(offs))):.3f} arcsec")
+rms = np.sqrt(np.mean(np.square(offs)))
+print(f"image-plane rms = {rms:.3f} arcsec (expect ~0.3); median |μ| = {np.median(mus):.1f}; "
+      f"systems with missing images: {missing or 'none'}")
+if rms > 1.0 or missing:
+    print("WARNING: the MAP does not reproduce the observed images. Do not run the samplers from it; "
+          "try more N_STARTS or a different seed.")
 """)
 
 md(r"""
@@ -397,22 +401,7 @@ if nuts_w is not None:
     show_diag(nuts_w)
 """)
 
-md(r"""
-## 6. Stage E: sensitivity to the magnification cap
-
-Repeat stage D with a different cap (`CAP_CHECK`), with errors recalibrated
-for that cap. A larger cap is closer to glafic's uncapped χ², but brings
-back some of the spikes near critical curves, so check its diagnostics
-carefully.
-""")
-
-code(r"""
-nuts_w2 = w0wa_stage(CAP_CHECK, RUN_E) if CAP_CHECK else None
-if nuts_w2 is not None:
-    show_diag(nuts_w2)
-""")
-
-md("## 7. Stage F: cosmology")
+md("## 6. Stage E: cosmology")
 
 code(r"""
 import corner
@@ -428,7 +417,7 @@ def cosmo_samples(res):
     return np.column_stack([om, w0, wa, w0 + wa])
 
 
-runs = [(f"μ_cap = {MAG_CAP:g}", nuts_w, "tab:blue"), (f"μ_cap = {CAP_CHECK}", nuts_w2, "tab:orange")]
+runs = [("w0waCDM", nuts_w, "tab:blue")]          # add more (label, result, colour) to compare runs
 runs = [r for r in runs if r[1] is not None]
 if runs:
     fig = None
@@ -501,10 +490,9 @@ md(r"""
 * **Assumptions worth testing:**
   * the mass-model family, for example adding an m = 4 multipole or a
     separate BCG (`build.write_all(mpoles=..., bcg=True)`);
-  * the magnification cap (stage E);
   * one common positional error for all images;
   * the photometric-redshift ranges (±4σ, flat).
-* **Validation.** Trust stages D and E only if stage C agrees and their own
+* **Validation.** Trust stage D only if stage C agrees and its own
   diagnostics are clean.
 * **Performance.** NUTS cost is roughly (gradient evaluations per sample) ×
   (time per gradient), and `show_diag` prints the first. On a GPU, more
