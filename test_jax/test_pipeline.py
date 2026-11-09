@@ -50,12 +50,25 @@ def test_pipeline_map_svi_hmc():
     r = gj.Pipeline(m).map(jnp.asarray(BEST[:7]), verbose=False)
     assert r["chi2"] < 1.0           # 4 images, positions only: nearly exact fit
     m.set_source_mode("marginalize")
-    pipe = gj.Pipeline(m)
-    r = pipe.map(jnp.asarray(r["theta"]), verbose=False)
+    pipe = gj.Pipeline(m, reparam={"lens1_sie_p2": "log10"}, bounds={"lens1_sie_p2": (100.0, 1000.0)})
+    pipe.set_map(r["theta"])
+    lap = pipe.laplace(num_draws=200, verbose=False)
+    assert np.all(np.linalg.eigvalsh(lap["cov_z"]) > 0)
     s = pipe.svi(num_steps=300, num_draws=200, verbose=False)
     assert np.all(np.isfinite(s["theta"]))
-    h = pipe.hmc(num_warmup=100, num_samples=100, progress_bar=False, verbose=False)
-    assert h["theta"].shape == (1, 100, 7)
+    h = pipe.hmc(num_warmup=150, num_samples=100, num_chains=2, progress_bar=False, verbose=False)
+    assert h["theta"].shape == (2, 100, 7)
     assert np.all(np.isfinite(h["log_prob"]))
+    assert h["diverging"].mean() < 0.05
     # posterior mean of the velocity dispersion close to the best fit
     assert abs(h["theta"][..., 0].mean() - r["theta"][0]) < 10.0
+
+
+def test_reparam_roundtrip():
+    m = _model(position_only=True)
+    m.set_source_mode("marginalize")
+    pipe = gj.Pipeline(m, reparam={"lens1_sie_p2": "log10", "lens1_sie_p6": ("offset", "lens1_sie_p5", -10.0, 10.0)},
+                       bounds={"lens1_sie_p2": (100.0, 1000.0)})
+    th = pipe.clip_inside(jnp.asarray(BEST[:7]))
+    assert np.allclose(np.asarray(pipe.to_theta(pipe.to_z(th))), np.asarray(th), rtol=1e-12, atol=1e-12)
+    assert "000_log10_lens1_sie_p2" in pipe.site

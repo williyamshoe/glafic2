@@ -16,4 +16,4 @@ from .model import Model  # noqa: E402
 from .io import read_input, read_prior  # noqa: E402
 from . import point, extend, imagefinder  # noqa: E402
 from .inference import optimize, run_nuts, summary  # noqa: E402
-from .pipeline import Pipeline, diagnostics  # noqa: E402
+from .pipeline import Pipeline, diagnostics, angle_bounds  # noqa: E402

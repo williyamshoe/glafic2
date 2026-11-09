@@ -31,8 +31,17 @@ def _lensout_dict(o):
                 muinv=o.muinv, td=o.td)
 
 
-def set_matrix(o, imag_ceil):
-    norm = 1.0 / (o.muinv + imag_ceil)
+def set_matrix(o, imag_ceil, mag_cap=0.0):
+    """Magnification-tensor weights of the source-plane chi^2 (set_matrix in
+    opt_point.c).  ``mag_cap > 0`` replaces 1/muinv by the smooth, bounded
+    muinv / (muinv^2 + e^2) with e = 1 / (2 mag_cap), so |mu| <= mag_cap: this
+    removes the infinite spikes of the source-plane chi^2 for images lying
+    on critical curves (not in glafic; off by default)."""
+    if mag_cap and mag_cap > 0.0:
+        e = 0.5 / mag_cap
+        norm = o.muinv / (o.muinv * o.muinv + e * e)
+    else:
+        norm = 1.0 / (o.muinv + imag_ceil)
     k, g1, g2, r = o.kap, o.gam1, o.gam2, o.rot
     a00 = norm * norm * ((1.0 - k + g1) ** 2 + (g2 - r) ** 2)
     a01 = 2.0 * norm * norm * (g2 * (1.0 - k) + g1 * r)
@@ -127,7 +136,7 @@ def chi2_splane_single(model, P, i):
     ox = jnp.asarray(obs[:, 0])
     oy = jnp.asarray(obs[:, 1])
     o = lens.ray_shoot(ox, oy, P["lens"], zs, cosmo, nlp=nlp, dist=dist)
-    amat, mumat = set_matrix(o, s.imag_ceil)
+    amat, mumat = set_matrix(o, s.imag_ceil, getattr(s, 'mag_cap', 0.0))
     ux = ox - o.ax
     uy = oy - o.ay
     mag0 = 1.0 / (o.muinv + s.imag_ceil)
@@ -254,6 +263,36 @@ def _newton_refine(lens, x, y, xs, ys, Pl, zs, cosmo, nlp, dist):
     return x + ((1.0 - pyy) * ff + pxy * gg) / mm, y + ((1.0 - pxx) * gg + pyx * ff) / mm
 
 
+_ALPHAS = np.array([1.0, 0.5, 0.25, 0.125, 0.0625, 0.03125, 0.015625])
+
+
+def _newton_step_parity(lens, x, y, xs, ys, Pl, zs, cosmo, nlp, target):
+    """Damped Newton step for the lens equation that never crosses a critical
+    curve: the largest step fraction keeping sign(1/mu) == target is taken
+    (target 0 = unconstrained).  Used to track each observed image on its own
+    side of the critical curve (fold pairs would otherwise collapse onto one
+    image).  All candidate step lengths are evaluated in parallel."""
+    o = lens.ray_shoot(x, y, Pl, zs, cosmo, nlp=nlp)
+    pxx = o.kap + o.gam1
+    pyy = o.kap - o.gam1
+    pxy = o.gam2 + o.rot
+    pyx = o.gam2 - o.rot
+    ff = xs - x + o.ax
+    gg = ys - y + o.ay
+    mm = (1.0 - pxx) * (1.0 - pyy) - pxy * pyx
+    dx = ((1.0 - pyy) * ff + pxy * gg) / mm
+    dy = ((1.0 - pxx) * gg + pyx * ff) / mm
+    a = jnp.asarray(_ALPHAS)[:, None]
+    cx = x[None, :] + a * dx[None, :]
+    cy = y[None, :] + a * dy[None, :]
+    mu_c = lens.ray_shoot(cx, cy, Pl, zs, cosmo, nlp=nlp).muinv
+    ok = (target[None, :] == 0) | (jnp.sign(mu_c) == target[None, :])
+    ok = ok & jnp.isfinite(cx) & jnp.isfinite(cy)
+    first = jnp.argmax(ok, axis=0)
+    alpha = jnp.where(jnp.any(ok, axis=0), jnp.asarray(_ALPHAS)[first], 0.0)
+    return x + alpha * dx, y + alpha * dy
+
+
 def chi2_iplane_single(model, P, i, mode="glafic", n_track=20):
     s = model.settings
     obs = model.obs_point[i]["tab"]
@@ -342,7 +381,7 @@ def batch_data(model):
         val[k, :n] = True
     pr = model.prior_point
     ii = np.array(idx)
-    return dict(idx=ii, obs=obs, parity=par, valid=val,
+    return dict(idx=ii, obs=obs, parity=par, valid=val, track_parity=np.sign(par).astype(float),
                 pmed=pr["med"][ii, 1:3], psig=pr["sig"][ii, 1:3],
                 pmin=pr["min"][ii, 1:3], pmax=pr["max"][ii, 1:3],
                 nlp=sorted({model.nlp_point[i] for i in idx}))
@@ -384,8 +423,38 @@ def chi2_point_batched(model, P, mode="splane", n_track=20, return_terms=False, 
 
     if source_mode == "marginalize" and mode != "splane":
         raise ValueError("source_mode='marginalize' requires the source-plane chi^2")
+    nmax = bd["obs"].shape[1]
+    S = len(bd["idx"])
+    if mode == "glafic":
+        if source_mode == "profile":
+            xy_all = chi2_point_batched(model, P, mode="splane", return_terms=True, source_mode="profile")[5]
+        # exact glafic image finding + greedy matching for all sources (host)
+        def host(lp, cp, zz, xy):
+            lp, cp, zz, xy = np.asarray(lp), np.asarray(cp), np.asarray(zz), np.asarray(xy)
+            pos = np.array(bd["obs"][:, :, :2])
+            st = np.zeros(S, dtype=np.int32)
+            for k, i in enumerate(bd["idx"]):
+                n = int(bd["valid"][k].sum())
+                imgs = model.find_images_numeric(lp, cp, float(zz[k]), float(xy[k, 0]), float(xy[k, 1]),
+                                                 point_index=int(i))
+                kk, stat = _match_images(s, bd["obs"][k, :n], bd["parity"][k, :n], imgs)
+                if stat != 0:
+                    st[k] = 1
+                else:
+                    pos[k, :n] = imgs[kk, :2]
+            return pos.astype(np.float64), st
 
-    def one(zs, xy, obs, parity, valid, pmed, psig, pmin, pmax):
+        shapes = (jax.ShapeDtypeStruct((S, nmax, 2), jnp.float64), jax.ShapeDtypeStruct((S,), jnp.int32))
+        gpos, gst = jax.pure_callback(host, shapes, sg(Pl), sg(cosmo), sg(zs_all), sg(xy_all),
+                                      vmap_method="sequential")
+    else:
+        gpos = jnp.asarray(bd["obs"][:, :, :2])
+        gst = jnp.zeros(S, dtype=jnp.int32)
+    src_mode_inner = "sample" if mode == "glafic" else source_mode
+
+    tpar = jnp.asarray(bd["track_parity"])
+
+    def one(zs, xy, obs, parity, valid, pmed, psig, pmin, pmax, gp, gs, tp):
         dist = lens.distances(Pl, zs, cosmo, nlp)
         ox, oy = obs[:, 0], obs[:, 1]
         pe = obs[:, 3]
@@ -393,12 +462,12 @@ def chi2_point_batched(model, P, mode="splane", n_track=20, return_terms=False, 
         pe2 = jnp.where(hasp, pe * pe, 1.0)
         dis_lum = COVERH_MPCH * cm.dis_luminosity(0.0, zs, cosmo)
         logdet = 0.0
-        if mode == "splane" or source_mode != "sample":
+        if mode == "splane" or src_mode_inner != "sample":
             o = lens.ray_shoot(ox, oy, Pl, zs, cosmo, nlp=nlp, dist=dist)
-            amat, mumat = set_matrix(o, s.imag_ceil)
+            amat, mumat = set_matrix(o, s.imag_ceil, getattr(s, 'mag_cap', 0.0))
             ux = ox - o.ax
             uy = oy - o.ay
-        if source_mode != "sample":
+        if src_mode_inner != "sample":
             w = jnp.where(hasp, 1.0 / pe2, 0.0)
             ps = jnp.where(psig > 0.0, psig, 1.0)
             wp = jnp.where(psig > 0.0, 1.0 / (ps * ps), 0.0)
@@ -429,11 +498,14 @@ def chi2_point_batched(model, P, mode="splane", n_track=20, return_terms=False, 
             td = o.td - tlast * ((ux - (ox - o.def_last[0])) * rx + (uy - (oy - o.def_last[1])) * ry)
             status = jnp.int32(0)
         else:
-            def step(c, _):
-                x, y = c
-                return _newton_refine(lens, x, y, sg(xs), sg(ys), sg(Pl), sg(zs), sg(cosmo), nlp, None), None
+            if mode == "glafic":
+                x0, y0 = gp[:, 0], gp[:, 1]
+            else:
+                def step(c, _):
+                    x, y = c
+                    return _newton_step_parity(lens, x, y, sg(xs), sg(ys), sg(Pl), sg(zs), sg(cosmo), nlp, tp), None
 
-            (x0, y0), _ = jax.lax.scan(step, (ox, oy), None, length=n_track)
+                (x0, y0), _ = jax.lax.scan(step, (ox, oy), None, length=n_track)
             xi, yi = _newton_refine(lens, x0, y0, xs, ys, Pl, zs, cosmo, nlp, dist)
             o = lens.ray_shoot(xi, yi, Pl, zs, cosmo, nlp=nlp, dist=dist)
             mag = 1.0 / (o.muinv + s.imag_ceil)
@@ -445,7 +517,10 @@ def chi2_point_batched(model, P, mode="splane", n_track=20, return_terms=False, 
             dup = jnp.any((dd < 1e-10) & ~jnp.eye(n, dtype=bool) & valid[:, None] & valid[None, :])
             # Newton did not converge onto an image (e.g. no image near the data)
             res = jnp.max(jnp.where(valid, jnp.abs(xi - x0) + jnp.abs(yi - y0), 0.0))
-            status = jnp.where(dup | (res > 1e-4) | ~jnp.all(jnp.isfinite(xi)), 1, 0)
+            if mode == "glafic":
+                status = jnp.where((gs != 0) | ~jnp.all(jnp.isfinite(xi)), 1, 0)
+            else:
+                status = jnp.where(dup | (res > 1e-4) | ~jnp.all(jnp.isfinite(xi)), 1, 0)
         c2f, c2t, _, _ = _flux_td_chi2(s, obs, mag, td, dis_lum, cosmo[3], parity, valid)
         c2pr = _prior_xy(xy, pmed, psig)
         tot = c2p + c2f + c2t + c2pr + logdet
@@ -456,7 +531,7 @@ def chi2_point_batched(model, P, mode="splane", n_track=20, return_terms=False, 
 
     out = jax.vmap(one)(zs_all, xy_all, jnp.asarray(bd["obs"]), jnp.asarray(bd["parity"]),
                         jnp.asarray(bd["valid"]), jnp.asarray(bd["pmed"]), jnp.asarray(bd["psig"]),
-                        jnp.asarray(bd["pmin"]), jnp.asarray(bd["pmax"]))
+                        jnp.asarray(bd["pmin"]), jnp.asarray(bd["pmax"]), gpos, gst, tpar)
     if return_terms:
         return out
     return jnp.sum(out[0])

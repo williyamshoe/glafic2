@@ -604,9 +604,9 @@ class Model:
             tot = tot + c2e + c2pe
             bad = bad | bade | self.range_bad_ext(P)
         batched = (self._point_batch is not None and len(self._point_batch["nlp"]) == 1 and
-                   (s.chi2_splane == 1 or point_mode == "tracked"))
+                   (s.chi2_splane == 1 or point_mode in ("tracked", "glafic")))
         if batched:
-            mode = "splane" if s.chi2_splane == 1 else "tracked"
+            mode = "splane" if s.chi2_splane == 1 else point_mode
             terms = point_mod.chi2_point_batched(self, P, mode=mode, return_terms=True,
                                                  source_mode=self.source_mode)
             out["point_terms"] = terms
@@ -663,6 +663,31 @@ class Model:
             raise ValueError(mode)
         self.source_mode = mode
         return self.model_init()
+
+    def set_tracking_parity(self, P=None, verbose=True):
+        """Record the parity (sign of 1/mu) of the model image matched to each
+        observed image, using glafic's exact image finder at parameters ``P``
+        (e.g. the MAP).  The tracked image-plane chi^2 then keeps every image
+        on its own side of the critical curves.  Sources whose image count
+        does not match are left unconstrained (parity 0)."""
+        P = self.params() if P is None else P
+        if self.source_mode != "sample":
+            P = self.best_sources(P)
+        bd = self._point_batch
+        tp = np.zeros_like(bd["track_parity"])
+        lp, cp = np.asarray(P["lens"]), np.asarray(P["cosmo"])
+        for k, i in enumerate(bd["idx"]):
+            n = int(bd["valid"][k].sum())
+            imgs = self.find_images_numeric(lp, cp, float(P["point"][i, 0]), float(P["point"][i, 1]),
+                                            float(P["point"][i, 2]), point_index=int(i))
+            kk, st = point_mod._match_images(self.settings, bd["obs"][k, :n], bd["parity"][k, :n], imgs)
+            if st == 0:
+                tp[k, :n] = np.sign(imgs[kk, 2])
+            elif verbose:
+                print(f"[set_tracking_parity] point {i + 1}: {imgs.shape[0]} model images for {n} observed "
+                      "-> parity left unconstrained")
+        bd["track_parity"] = tp
+        return tp
 
     def best_sources(self, P):
         """Profiled (weighted least-squares) source positions -> P with them filled in."""

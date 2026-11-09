@@ -87,6 +87,9 @@ class Settings:
     #: 1 -> use a continuous (more accurate) lower limit for the elliptical-density
     #: integrals instead of glafic's switch at xi^2 = 10 (removes a ~1e-3 jump)
     ell_accurate: int = 0
+    #: >0: cap |mu| at this value in the source-plane chi^2 weights (smooths the
+    #: chi^2 for images on critical curves; not in glafic)
+    mag_cap: float = 0.0
 
     # derived quantities --------------------------------------------------
     @property
