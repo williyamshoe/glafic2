@@ -16,6 +16,15 @@ Re-parameterisation
   e.g. ``{"wa": ("offset", "weos", -3.0, 0.0)}`` samples ``w0 + wa`` so the
   condition ``w0 + wa < 0`` is part of the parameter space instead of a hard
   wall in the posterior (walls cause NUTS divergences).
+* ``("nfw_alpha", R, zs_ref)`` for the mass of an NFW-family halo
+  (``nfw``, ``nfwpot``, ``anfw``, ``tnfw``...; glafic ``nfw_users 0``):
+  sample log10 of the *spherical NFW deflection at radius R* [arcsec] for a
+  source at ``zs_ref`` instead of the virial mass.  This is proportional to
+  the projected mass inside R, the combination the multiple images measure,
+  so the mass-concentration degeneracy becomes a straight, axis-aligned
+  direction.  The mass is recovered by Newton inversion at the current
+  concentration and cosmology.  The prior stays flat in log10 M (the
+  Jacobian is included).
 
 Stages
 ------
@@ -140,6 +149,7 @@ class Pipeline:
         if unknown:
             raise ValueError(f"reparam refers to unknown parameters {sorted(unknown)}")
         self.kind, self.ref, self.site, cons = [], [], [], []
+        self._nfw = {}
         for k, n in enumerate(self.names):
             spec = self.reparam.get(n, "linear")
             lo, hi = self.bounds.get(n, _range_of(m, k))
@@ -159,6 +169,22 @@ class Pipeline:
                 self.kind.append("offset")
                 self.ref.append(r)
                 self.site.append(f"{k:03d}_{n}_plus_{other}")
+            elif isinstance(spec, tuple) and spec[0] == "nfw_alpha":
+                _, R, zref = spec
+                i, rest = n[4:].split("_", 1)
+                if not (n.startswith("lens") and rest.endswith("_p2")):
+                    raise ValueError("nfw_alpha applies to the mass (p2) of a lens")
+                if m.settings.nfw_users != 0:
+                    raise ValueError("nfw_alpha needs nfw_users 0 (mass, concentration)")
+                il = int(i) - 1
+                cname = f"lens{i}_{rest[:-3]}_p7"
+                kc = self.names.index(cname) if cname in self.names else -1
+                self._nfw[k] = (il, float(R), float(zref), kc)
+                mlo, mhi = self.bounds.get(n, _range_of(m, k))
+                lo, hi = self.bounds.get(n + ":alpha", (-3.0, 4.0))
+                self.kind.append("nfw_alpha")
+                self.ref.append(-1)
+                self.site.append(f"{k:03d}_log10alpha{R:g}_{n}")
             elif spec == "linear":
                 self.kind.append("linear")
                 self.ref.append(-1)
@@ -170,15 +196,25 @@ class Pipeline:
         self.transforms = [biject_to(c) for c in cons]
 
     def v_to_theta(self, v):
+        v = jnp.asarray(v)
+        if self._nfw and v.ndim > 1:                 # batched (sites first): vmap the inversion
+            sh = v.shape[1:]
+            out = jax.vmap(self.v_to_theta, in_axes=1)(v.reshape(v.shape[0], -1))
+            return out.reshape(sh + (v.shape[0],))
         out = []
         for k, kind in enumerate(self.kind):
             if kind == "log10":
                 out.append(10.0 ** v[k])
             elif kind == "offset":
                 out.append(v[k] - v[self.ref[k]])
+            elif kind == "nfw_alpha":
+                out.append(jnp.asarray(1.0e14, dtype=v.dtype))       # placeholder, solved below
             else:
                 out.append(v[k])
-        return jnp.stack(out, axis=-1)
+        theta = jnp.stack(out, axis=-1)
+        for k in self._nfw:
+            theta = theta.at[k].set(10.0 ** self._nfw_log10m(theta, v[k], k))
+        return theta
 
     def theta_to_v(self, theta):
         theta = jnp.asarray(theta)
@@ -188,9 +224,57 @@ class Pipeline:
                 out.append(jnp.log10(theta[k]))
             elif kind == "offset":
                 out.append(theta[k] + theta[self.ref[k]])
+            elif kind == "nfw_alpha":
+                out.append(self._nfw_log10alpha(theta, jnp.log10(theta[k]), k))
             else:
                 out.append(theta[k])
         return jnp.stack(out)
+
+    # --- NFW mass <-> deflection at R ---------------------------------
+    def _nfw_log10alpha(self, theta, log10m, k):
+        """log10 of the spherical NFW deflection at R [arcsec] (source at zs_ref)."""
+        from . import cosmology as cm
+        from .lens_models import PlaneContext, calc_bbtt_nfw, dphi_nfw_dl
+        il, R, zref, kc = self._nfw[k]
+        m = self.model
+        P = m.unflatten(theta)
+        cosmo = P["cosmo"]
+        zl = P["lens"][il, 0]
+        c = theta[kc] if kc >= 0 else P["lens"][il, 6]
+        s = m.settings
+        ctx = PlaneContext(zl, cm.dis_angulard(0.0, zref, cosmo), cm.dis_angulard(0.0, zl, cosmo),
+                           cm.dis_angulard(zl, zref, cosmo),
+                           cm.deltaomega(zl, cosmo, s.flag_hodensity, s.hodensity), cosmo, s, None)
+        bb, tt = calc_bbtt_nfw(10.0 ** log10m, c, ctx)
+        return jnp.log10(bb * tt * dphi_nfw_dl(R / tt))
+
+    def _nfw_log10m(self, theta, log10a, k, iters=30):
+        """Invert log10 alpha(M) = log10a at fixed concentration and cosmology.
+        Newton on a stopped-gradient copy, then one differentiable Newton step
+        (exact first derivatives via the implicit-function theorem)."""
+        f = lambda u, th: self._nfw_log10alpha(th, u, k)
+        df = jax.grad(f)
+        th0 = jax.lax.stop_gradient(theta)
+        a0 = jax.lax.stop_gradient(log10a)
+
+        def body(_, u):
+            return jnp.clip(u - (f(u, th0) - a0) / df(u, th0), 9.0, 19.0)
+        u = jax.lax.fori_loop(0, iters, body, jnp.asarray(14.5, dtype=theta.dtype))
+        u = jax.lax.stop_gradient(u)
+        return u - (f(u, theta) - log10a) / jax.lax.stop_gradient(df(u, th0))
+
+    def log_prior_reparam(self, v):
+        """Extra log-density on the sampled sites so that priors stay flat in
+        the original parameters where requested (nfw_alpha: flat in log10 M)."""
+        if not self._nfw:
+            return 0.0
+        theta = self.v_to_theta(v)
+        tot = 0.0
+        for k in self._nfw:
+            u = jnp.log10(theta[k])
+            dadu = jax.grad(lambda uu: self._nfw_log10alpha(theta, uu, k))(u)
+            tot = tot - jnp.log(jnp.abs(dadu))
+        return tot
 
     def z_to_v(self, z):
         return jnp.stack([t(z[k]) for k, t in enumerate(self.transforms)])
@@ -229,7 +313,8 @@ class Pipeline:
 
     def potential_z(self, z, **kw):
         """-log posterior density in z (includes the Jacobian)."""
-        return -(self.log_prob(self.to_theta(z), **kw) + self.log_jac(z))
+        return -(self.log_prob(self.to_theta(z), **kw) + self.log_jac(z)
+                 + self.log_prior_reparam(self.z_to_v(z)))
 
     def numpyro_model(self, floor=None, **kw):
         """NumPyro model with flat priors on the sampling ranges + glafic likelihood.
@@ -237,7 +322,7 @@ class Pipeline:
         def f():
             v = jnp.stack([numpyro.sample(s, dist.ImproperUniform(c, (), ()))
                            for s, c in zip(self.site, self.constraints)])
-            lp = self.log_prob(self.v_to_theta(v), **kw)
+            lp = self.log_prob(self.v_to_theta(v), **kw) + self.log_prior_reparam(v)
             if floor is not None:
                 lp = jnp.where(jnp.isfinite(lp), lp, floor)
             numpyro.factor("glafic_loglike", lp)
