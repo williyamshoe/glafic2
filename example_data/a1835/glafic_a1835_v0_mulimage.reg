@@ -1,0 +1,24 @@
+# Region file format: DS9 version 4.1
+global color=green font="helvetica 8 normal roman"
+fk5
+circle(210.265729891259,2.87060645555556,0.4") # width=2 text={1.1} color=magenta
+circle(210.264029968689,2.86930062222222,0.4") # width=2 text={1.2} color=magenta
+circle(210.24740009789,2.86988117777778,0.4") # width=2 text={1.3} color=magenta
+circle(210.266140131081,2.87416256666667,0.4") # width=2 text={2.1} color=magenta
+circle(210.263579956464,2.87141201111111,0.4") # width=2 text={2.2} color=magenta
+circle(210.248240046542,2.87175312222222,0.4") # width=2 text={2.3} color=magenta
+circle(210.263260108467,2.88498006666667,0.4") # width=2 text={3.1} color=magenta
+circle(210.262780058343,2.88521756666667,0.4") # width=2 text={3.2} color=magenta
+circle(210.243739924293,2.87753812222222,0.4") # width=2 text={3.3} color=magenta
+circle(210.263819981526,2.8846759,0.4") # width=2 text={4.1} color=magenta
+circle(210.260729971749,2.88583201111111,0.4") # width=2 text={4.2} color=magenta
+circle(210.244350138645,2.87814895555556,0.4") # width=2 text={4.3} color=magenta
+circle(210.259839959932,2.88240756666667,0.4") # width=2 text={5.1} color=magenta
+circle(210.244839923273,2.87215173333333,0.4") # width=2 text={5.2} color=magenta
+circle(210.259209998443,2.87926701111111,0.4") # width=2 text={5.3} color=magenta
+circle(210.253950028605,2.87318617777778,0.4") # width=2 text={6.1} color=magenta
+circle(210.254210078932,2.88033867777778,0.4") # width=2 text={6.2} color=magenta
+circle(210.271079974793,2.88010228888889,0.4") # width=2 text={6.3} color=magenta
+circle(210.260939958912,2.8821034,0.4") # width=2 text={7.1} color=magenta
+circle(210.244950062235,2.87315145555556,0.4") # width=2 text={7.2} color=magenta
+circle(210.259579909604,2.87909006666667,0.4") # width=2 text={7.3} color=magenta

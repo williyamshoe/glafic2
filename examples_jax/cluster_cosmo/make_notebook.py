@@ -43,6 +43,17 @@ holds catalogues in the glafic public-model format:
 | `glafic_<name>_vN_memgal.txt` | RA, Dec, L/L*, e, PA of the cluster members (the brightest is the BCG) |
 | `glafic_<name>_vN_readme.txt` | lens redshift (`# zl = ...`) and, optionally, the published fit (`# chi2 = .. , dof = ..`) |
 
+With `SPEC_ONLY = True` (the default) systems with a photometric redshift are
+left out entirely, so every source redshift is fixed. This also changes the
+number of constraints, so the χ² no longer compares directly with the published
+fit.
+
+Clusters marked in the `exclude` column of
+`example_data/venus_clusters_summary.csv` are judged too complex or not
+worth modelling. The notebook refuses to run one unless `RUN_EXCLUDED = True`.
+Rows are matched to folders by lens redshift, number of systems and published
+χ², or by a `folder` column if you add one.
+
 To add a cluster, drop a new folder in `example_data/`. `build_cluster.py`
 lists what it finds (`python build_cluster.py`).
 
@@ -51,19 +62,32 @@ lists what it finds (`python build_cluster.py`).
 * an elliptical NFW halo, with all 6 parameters free;
 * pseudo-Jaffe members with σ ∝ L^1/4 and r_trun ∝ L^η, where σ*, r_trun* and
   η are free;
-* external shear (`shear`, on by default);
+* optional external shear (`shear`, off by default);
 * optional multipoles centred on the BCG (`mpoles`) and an optional separate
   BCG (`bcg`).
 
-These are set per cluster in `CLUSTER_MODEL`, together with optional
-**image parities** (`parity`, the sign of 1/μ). The source-plane χ² does not
-check which side of a critical curve an image lies on. For an image pair
-merging across a critical curve, this lets the posterior split into a
-physical mode, with the curve between the two images, and an unphysical one.
-Fixing their parities (opposite signs) removes the wrong mode; section 7
-lists the close pairs and suggests the signs. Drop the shear when it is
-consistent with zero: its angle is then unconstrained, and the amplitude–angle
-pair forms a funnel at γ = 0 that NUTS samples poorly.
+Every cluster runs with no per-cluster settings; additions go in
+`CLUSTER_MODEL`. The shear is off by default because it is often consistent
+with zero. Its angle is then unconstrained, and the amplitude–angle pair
+forms a funnel at γ = 0 that NUTS samples poorly.
+
+**Image parities** (the sign of 1/μ). The source-plane χ² does not check
+which side of a critical curve an image lies on. For an image pair merging
+across a critical curve, this lets the posterior split into a physical mode,
+with the curve between the two images, and an unphysical one. With
+`PARITY = "auto"` (the default), stage A finds the best fit without a
+parity constraint. Every **close pair** (images of one system closer than
+`PAIR_SEP`) that has opposite parities there then has both parities fixed.
+Close pairs with the same parity are reported but not constrained: if one of
+them is really a merging pair, the best fit is in the wrong mode, and you set
+its signs by hand (`parity={"3.3": -1, "3.4": +1}` in `CLUSTER_MODEL`).
+
+The constraint is a steep χ² penalty on the true 1/μ at the observed
+positions (`PARITY_TOL`), not glafic's own parity column. In the
+source-plane χ², glafic checks the sign of a linearly corrected
+magnification, which for |μ| ≳ 100 is dominated by the correction and has an
+essentially random sign. Section 7 checks that the samples respect the
+constraints.
 
 For RXJ2129, the base recipe reproduces the published fit but fails to form
 the image pair 3.2/3.3, and an m = 3 multipole fixes that. For a new cluster,
@@ -126,19 +150,27 @@ import jax, jax.numpy as jnp
 import build_cluster as build
 
 print("jax", jax.__version__, "| backend:", jax.default_backend(), "| devices:", jax.devices())
-print("clusters in example_data/:", build.available())
+EXCLUDED = build.excluded_clusters()      # marked in example_data/venus_clusters_summary.csv
+print("clusters to model:", build.available(excluded=False))
+print("excluded:", EXCLUDED)
 
 # ---------------- configuration ----------------
 CLUSTER = os.environ.get("GLAFIC_CLUSTER", "rj2129")   # folder name in example_data/
+RUN_EXCLUDED = False              # allow a cluster marked in the summary table's 'exclude' column
+if CLUSTER in EXCLUDED and not RUN_EXCLUDED:
+    raise ValueError(f"{CLUSTER} is excluded in venus_clusters_summary.csv; set RUN_EXCLUDED = True to run it")
 CLUSTER_MODEL = {                 # per-cluster additions to the base recipe
     "rj2129": dict(mpoles=[(3, 2)]),       # m = 3 needed to form images 3.2/3.3
-    "mj0429": dict(shear=False,            # γ_ext = 0.012 ± 0.012: free shear only adds an unconstrained angle
-                   parity={"3.3": -1, "3.4": +1}),   # merging pair: curve between them (section 7)
+    # "<name>": dict(shear=True, bcg=True, mpoles=[(4, 2)], parity={"3.3": -1, "3.4": +1}),
 }
 MPOLES = CLUSTER_MODEL.get(CLUSTER, {}).get("mpoles", [])   # (m, n) multipoles centred on the BCG
 BCG = CLUSTER_MODEL.get(CLUSTER, {}).get("bcg", False)      # model the BCG separately
-SHEAR = CLUSTER_MODEL.get(CLUSTER, {}).get("shear", True)   # external shear (amplitude, angle)
-PARITY = CLUSTER_MODEL.get(CLUSTER, {}).get("parity", {})   # {image ID: ±1} required sign of 1/μ
+SHEAR = CLUSTER_MODEL.get(CLUSTER, {}).get("shear", False)  # external shear (amplitude, angle)
+PARITY = CLUSTER_MODEL.get(CLUSTER, {}).get("parity", "auto")
+# "auto": fix the parities of close pairs that straddle a critical curve at the best fit;
+# {image ID: ±1}: required signs of 1/μ, set by hand;  {}: no parity constraint
+PAIR_SEP = 2.0                    # [arcsec] images of one system closer than this form a close pair
+SPEC_ONLY = True                  # use only spectroscopically confirmed systems (drop photometric z_s)
 MAG_CAP = 0.0                     # 0 = glafic's exact source-plane chi2 (do not cap; see above)
 POS_ERR0 = 0.4                    # catalogue positional error [arcsec], before rescaling
 CALIBRATE_ERRORS = True           # rescale errors so that the LCDM best fit has chi2/dof = 1
@@ -162,8 +194,16 @@ if SMOKE_TEST:
 md("## 1. Data")
 
 code(r"""
-cl = build.load(CLUSTER)
+cl = build.load(CLUSTER, spec_only=SPEC_ONLY)
 print(build.summary(cl))
+if PARITY != "auto":
+    bad = set(PARITY) - {iid for s in cl["systems"].values() for iid in s["ids"]}
+    if bad:
+        raise ValueError(f"PARITY refers to images not in the fit (photometric systems with SPEC_ONLY?): "
+                         f"{sorted(bad)}")
+if len({round(s["zs"], 3) for s in cl["systems"].values()}) < 2:
+    print("WARNING: all systems are at one source redshift; the lens model can be fitted, "
+          "but the cosmology is unconstrained (it needs distance ratios between source planes)")
 systems = cl["systems"]
 SIDS = list(systems)                                   # catalogue system IDs, in glafic point order
 xy_all = np.concatenate([np.array(s["xy"]) for s in systems.values()])
@@ -180,9 +220,9 @@ REPARAM = {"lens1_anfw_p2": ("nfw_alpha", NFW_ALPHA_R, NFW_ALPHA_ZS) if USE_NFW_
            "lens2_gals_p7": "log10"}          # member truncation radius: flat in log10
 
 # results folder for this model setup
-TAG = "_".join(["base"] + ([] if SHEAR else ["noshear"]) + [f"mpole{m}{n}" for m, n in MPOLES]
+TAG = "_".join(["base"] + (["speconly"] if SPEC_ONLY else []) + ([] if SHEAR else ["noshear"]) + [f"mpole{m}{n}" for m, n in MPOLES]
                + (["bcg"] if BCG else [])
-               + (["par" + "-".join(sorted(PARITY))] if PARITY else [])
+               + (["autopar"] if PARITY == "auto" else ["mupar" + "-".join(sorted(PARITY))] if PARITY else [])
                + [f"nfwa{NFW_ALPHA_R:g}z{NFW_ALPHA_ZS:g}" if USE_NFW_ALPHA else "log10M"])
 RUN_DIR = os.path.join(RESULTS, TAG)
 os.makedirs(RUN_DIR, exist_ok=True)
@@ -190,8 +230,9 @@ print(f"model: {TAG}  ->  {RUN_DIR}")
 
 
 def write_files(outdir, pos_err):
-    return build.write_all(CLUSTER, outdir, mpoles=MPOLES, bcg=BCG, shear=SHEAR, parity=PARITY,
-                           pos_err=pos_err)
+    return build.write_all(CLUSTER, outdir, mpoles=MPOLES, bcg=BCG, shear=SHEAR, pos_err=pos_err,
+                           spec_only=SPEC_ONLY)
+    # parities are not written to the obs file (see add_parity_penalty)
 
 
 write_files(RUN_DIR, POS_ERR0)
@@ -226,6 +267,42 @@ def make_model(cap, cosmology_free=False, lens=None, poi=None):
     if lens is not None:
         m.lens_params = np.array(lens); m.poi_params = np.array(poi)
     m.model_init()
+    return add_parity_penalty(m)
+
+
+PARITY_TOL = 1e-4                 # softness of the parity wall, in 1/μ
+# parities in force: set by hand, or (PARITY = "auto") found from the best fit in stage A
+PARITY_FIX = {} if PARITY == "auto" else dict(PARITY)
+IMG_IDS = [iid for s in systems.values() for iid in s["ids"]]   # same order as the obs file
+CLOSE_PAIRS = [(s["ids"][a], s["ids"][b]) for s in systems.values()
+               for a in range(len(s["ids"])) for b in range(a + 1, len(s["ids"]))
+               if np.hypot(*np.subtract(s["xy"][a], s["xy"][b])) < PAIR_SEP]
+
+
+def add_parity_penalty(m):
+    # chi2 += sum ( min(0, parity * 1/μ) / PARITY_TOL )^2 at the observed positions of the PARITY_FIX images.
+    # Zero on the required side of the critical curve, Δχ² = 100 at 1/μ = 1e-3 on the wrong side; smooth,
+    # so the MAP can climb out of the wrong side.  Applies to the MAP (m.chi2) and the samplers (log_prob).
+    terms = []
+    for k, s in enumerate(systems.values()):           # glafic point k = catalogue system k
+        js = [j for j, iid in enumerate(s["ids"]) if iid in PARITY_FIX]
+        if js:
+            tab = m.obs_point[k]["tab"]
+            terms.append((k, jnp.asarray(tab[js, 0]), jnp.asarray(tab[js, 1]),
+                          jnp.asarray([float(PARITY_FIX[s["ids"][j]]) for j in js]), int(m.nlp_point[k])))
+    if not terms:
+        return m
+    ls, base = m.lens_system, m.chi2
+
+    def chi2_parity(P):
+        c = 0.0
+        for k, x, y, sgn, nlp in terms:
+            mi = ls.ray_shoot(x, y, P["lens"], P["point"][k, 0], P["cosmo"], nlp=nlp).muinv
+            c = c + jnp.sum((jnp.minimum(sgn * mi, 0.0) / PARITY_TOL) ** 2)
+        return c
+
+    m.chi2_parity = chi2_parity
+    m.chi2 = lambda P=None, **kw: base(P, **kw) + chi2_parity(m.params() if P is None else P)
     return m
 
 
@@ -233,6 +310,30 @@ def dof_of(m):
     nimg = sum(o["tab"].shape[0] for o in m.obs_point)
     nlens = sum(n.startswith("lens") for n in m.theta_names)
     return 2 * nimg - 2 * m.num_poi - nlens
+
+
+def muinv_obs(m, P):
+    # signed 1/μ at every observed image position, in IMG_IDS order
+    return np.concatenate([np.asarray(m.lensmodel(jnp.asarray(o["tab"][:, 0]), jnp.asarray(o["tab"][:, 1]),
+                                                  float(P["point"][i, 0]), P).muinv)
+                           for i, o in enumerate(m.obs_point)])
+
+
+def auto_parity(m, P):
+    # parities of the close pairs that straddle a critical curve (opposite signs of 1/μ) in model P
+    mi = muinv_obs(m, P)
+    out = {}
+    for a, b in CLOSE_PAIRS:
+        ia, ib = IMG_IDS.index(a), IMG_IDS.index(b)
+        sa, sb = int(np.sign(mi[ia])), int(np.sign(mi[ib]))
+        txt = f"   close pair {a}/{b}: 1/μ = {mi[ia]:+.4f} / {mi[ib]:+.4f}"
+        if sa * sb < 0:
+            out[a], out[b] = sa, sb
+            print(txt + "  ->  straddles a critical curve; parities fixed")
+        else:
+            print(txt + "  ->  same parity, not constrained (if this is a merging pair, the best fit is "
+                  "in the wrong mode: set its parity in CLUSTER_MODEL)")
+    return out
 
 
 def check_owner(d, path):
@@ -285,6 +386,10 @@ md(r"""
 2. **Error calibration.** All images share one positional error σ, and the
    χ² scales as 1/σ². Setting σ = σ₀ √(χ²/dof) makes χ²/dof = 1 exactly,
    without changing the best fit.
+3. **Parities** (`PARITY = "auto"`). The close pairs that straddle a critical
+   curve at the best fit get their parities fixed for all later stages. The
+   penalty is zero at the best fit, so the fit and the calibration do not
+   change. The signs are saved in `calib.json`.
 
 If the readme gives a published fit, its χ² (at the catalogue errors) is
 printed for comparison. The two match only when the model and the number of
@@ -297,23 +402,31 @@ def stage_a(cap, start=None, n_starts=N_STARTS):
     if os.path.exists(f):
         return check_owner(json.load(open(f)), f)
     write_files(capdir(cap), POS_ERR0)
-    m = make_model(cap, **(start or {}))
+    m = make_model(cap, **(start or {}))        # with PARITY = "auto", no parity constraint yet
     m.set_source_mode("profile")
+    dof = dof_of(m)
+    if dof <= 0:
+        raise ValueError(f"{CLUSTER}: {dof} degrees of freedom ({sum(len(s['xy']) for s in systems.values())} "
+                         f"images in {len(systems)} systems): too few constraints for this model")
     pipe = gj.Pipeline(m, reparam=REPARAM)
     for k, (ns, jit) in enumerate([(n_starts, 0.5), (4 * n_starts, 1.0), (8 * n_starts, 1.5)]):
-        try:       # with PARITY, starts on the wrong side of a critical curve are invalid and skipped
+        try:
             r = pipe.map(n_starts=ns, jitter=jit, seed=k, verbose=False)
             break
         except ValueError as err:
             print(f"MAP attempt {k + 1}: {err}; retrying with more, wider starts")
     else:
-        raise RuntimeError("no starting point satisfies the parity constraints; check PARITY signs")
+        raise RuntimeError("MAP failed from every start")
     P = m.best_sources(m.unflatten(jnp.asarray(r["theta"])))
-    dof = dof_of(m)
+    if PARITY == "auto":                       # read the parities off the best fit (zero penalty there)
+        print("automatic parities from the best fit:")
+        parity = auto_parity(m, P)
+    else:
+        parity = dict(PARITY)
     sig = POS_ERR0 * np.sqrt(r["chi2"] / dof) if CALIBRATE_ERRORS else POS_ERR0
     write_files(capdir(cap), sig)
     out = dict(cluster=CLUSTER, tag=TAG, cap=cap, sigma=float(sig), chi2_raw=float(r["chi2"]), dof=int(dof),
-               lens=np.asarray(P["lens"]).tolist(), poi=np.asarray(P["point"]).tolist())
+               lens=np.asarray(P["lens"]).tolist(), poi=np.asarray(P["point"]).tolist(), parity=parity)
     json.dump(out, open(f, "w"))
     return out
 
@@ -321,11 +434,16 @@ def stage_a(cap, start=None, n_starts=N_STARTS):
 t0 = time.time()
 calib = {MAG_CAP: stage_a(MAG_CAP)}        # cached after the first run; every later stage needs it
 print(f"stage A: {time.time() - t0:.0f} s")
+PARITY_FIX = {k: int(v) for k, v in calib[MAG_CAP]["parity"].items()}   # in force from here on
+print(f"parity constraints{' (automatic)' if PARITY == 'auto' else ''}: "
+      + (", ".join(f"{k}: {v:+d}" for k, v in PARITY_FIX.items()) or "none"))
 for cap, c in calib.items():
     m = make_model(cap, lens=c["lens"], poi=c["poi"]); m.set_source_mode("profile")
     c2 = float(m.chi2(m.params()))
     print(f"cap {cap:g}: chi2 = {c['chi2_raw']:.2f} with σ = {POS_ERR0}\"  ->  σ = {c['sigma']:.3f}\", "
           f"chi2 = {c2:.2f} for {c['dof']} dof")
+    if PARITY_FIX:
+        print(f"   parity penalty at the MAP: {float(m.chi2_parity(m.params())):.3g} (should be 0)")
 ref = cl["ref"]
 if "chi2" in ref:
     print(f"published fit ({ref.get('model_ref', 'readme')}): chi2 = {ref['chi2']:.2f} for {ref['dof']:.0f} dof"
@@ -575,6 +693,56 @@ if nuts_w is not None and nuts_lcdm is not None:
 """)
 
 md(r"""
+### ΛCDM corner plot: lens parameters and photometric redshifts
+
+ΛCDM has no free cosmological parameters, so this shows the lens model: the
+NFW halo, the member scaling relation and the photometric redshifts. The
+w0waCDM posterior of the same parameters is overplotted. Where the two agree,
+freeing the cosmology does not change the lens model. M_vir is in units of
+10¹⁴ M_sun/h, and r_trun* is shown as log10, the way it is sampled.
+""")
+
+code(r"""
+import corner
+
+
+def lens_samples(res, names_ref):
+    # columns of names_ref (lens + photometric z) in plot units, from a NUTS result
+    names = list(res["names"]); th = res["theta"].reshape(-1, len(names))
+    cols, labs = [], []
+    for n in names_ref:
+        v, lab = th[:, names.index(n)], label(n)
+        if n.endswith("anfw_p2"):
+            v, lab = v / 1e14, "M_vir [1e14 M_sun/h]"
+        elif n.endswith("gals_p7"):
+            v, lab = np.log10(v), "log10 r_trun* [arcsec]"
+        cols.append(v); labs.append(lab)
+    return np.column_stack(cols), labs
+
+
+if nuts_lcdm is not None:
+    LENS_NAMES = [n for n in nuts_lcdm["names"] if not is_source(n)]
+    xl, labs = lens_samples(nuts_lcdm, LENS_NAMES)
+    runs = [(f"{CLUSTER} ΛCDM", xl, "tab:red")]
+    if nuts_w is not None:
+        runs.append((f"{CLUSTER} w0waCDM", lens_samples(nuts_w, LENS_NAMES)[0], "tab:blue"))
+    rng_ = [tuple(np.percentile(np.concatenate([x[:, k] for _, x, _ in runs]), [0.5, 99.5]))
+            for k in range(xl.shape[1])]
+    fig = None
+    for lab, x, col in runs:
+        fig = corner.corner(x, fig=fig, labels=labs, range=rng_, color=col, levels=(0.68, 0.95),
+                            plot_datapoints=False, plot_density=False, hist_kwargs=dict(density=True),
+                            label_kwargs=dict(fontsize=9))
+    fig.legend(handles=[plt.Line2D([], [], color=c) for _, _, c in runs], labels=[l for l, _, _ in runs],
+               loc="upper right", fontsize=12)
+    plt.show()
+    print(f"{CLUSTER} ΛCDM")
+    for lab, v in zip(labs, xl.T):
+        q = np.percentile(v, [16, 50, 84])
+        print(f"   {lab:24s} {q[1]:10.4g}  +{q[2] - q[1]:.3g} / -{q[1] - q[0]:.3g}")
+""")
+
+md(r"""
 ### Posterior-predictive check with exact image finding
 
 For random w0waCDM posterior draws, set the sources to their best positions
@@ -622,8 +790,8 @@ up, that image is what limits NUTS.
   `PAIR_SEP`. A pair merging across a critical curve must have opposite
   parities; samples where they share a sign are an unphysical mode. If one
   image of the pair keeps its parity, the suggested `parity` setting for
-  `CLUSTER_MODEL` is printed. Images already constrained by `PARITY` are
-  checked too: their violation fraction should be 0%.
+  `CLUSTER_MODEL` is printed. Images whose parity is fixed (by hand or
+  automatically) are checked too: their violation fraction should be 0%.
 * **Plots:** M_vir vs e_halo, and e_halo vs the signed 1/μ of the worst image
   (the critical curve is 1/μ = 0), with divergent samples in red; then the
   e_halo trace for each chain.
@@ -631,11 +799,7 @@ up, that image is what limits NUTS.
 
 code(r"""
 MU_FLAG = 100.0                   # |μ| above which an observed image counts as near-critical
-PAIR_SEP = 2.0                    # [arcsec] images of one system closer than this are checked as a pair
-IMG_IDS = [iid for s in systems.values() for iid in s["ids"]]   # same order as the obs file
-CLOSE_PAIRS = [(s["ids"][a], s["ids"][b]) for s in systems.values()
-               for a in range(len(s["ids"])) for b in range(a + 1, len(s["ids"]))
-               if np.hypot(*np.subtract(s["xy"][a], s["xy"][b])) < PAIR_SEP]
+# IMG_IDS, CLOSE_PAIRS (pairs closer than PAIR_SEP) and PARITY_FIX are defined in sections 1-2
 
 
 def mu_scan(res, model, batch=500):
@@ -700,10 +864,10 @@ def sampler_diagnostics(title, res, model):
             else:
                 msg += "  ->  both images flip; fix the signs from the best fit, or drop the pair"
         print(msg)
-    for iid, p in PARITY.items():
+    for iid, p in PARITY_FIX.items():
         bad = np.mean(np.sign(muinv[:, IMG_IDS.index(iid)]) != p)
         print(f"parity constraint {iid} = {p:+d}: violated in {bad:.1%} of samples"
-              + ("" if bad == 0 else "  <- the wall is leaking; check the sign convention"))
+              + ("" if bad < 0.005 else "  <- constraint not respected"))
 
     # divergences vs the worst image's magnification
     jw = int(np.argmax(np.median(amu, axis=0)))
@@ -764,7 +928,7 @@ md(r"""
   systems over a wide redshift range constrain it best.
 * **Assumptions worth testing:**
   * the mass-model family, for example adding multipoles or a separate BCG,
-    or dropping the shear (`CLUSTER_MODEL`);
+    or adding the external shear (`CLUSTER_MODEL`);
   * one common positional error for all images;
   * the photometric-redshift ranges (±4σ, flat).
 * **Validation.** Trust stage D only if stage C agrees and its own

@@ -21,7 +21,7 @@ Writes (in ``outdir``, file names start with ``prefix``, default ``name``):
 Coordinates are arcsec relative to the BCG with glafic's convention
 x = (RA0 - RA) cos(Dec0) * 3600 (positive to the west), y = (Dec - Dec0) * 3600.
 
-    python build_cluster.py                 # list the available clusters
+    python build_cluster.py                 # list the available clusters (spectroscopic systems only)
     python build_cluster.py mj0429 [outdir] # write the glafic files
 """
 import glob
@@ -37,10 +37,51 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.abspath(os.path.join(HERE, "..", "..", "example_data"))
 
 
-def available(data=DATA):
-    """Names of the clusters in ``data`` that have a multiple-image catalogue."""
-    return sorted(d for d in os.listdir(data)
-                  if glob.glob(os.path.join(data, d, f"glafic_{d}_*_mulimage.txt")))
+SUMMARY = "venus_clusters_summary.csv"      # optional table in ``data``, with an 'exclude' column
+
+
+def available(data=DATA, excluded=True):
+    """Names of the clusters in ``data`` that have a multiple-image catalogue
+    (without the ones marked in the summary table's 'exclude' column if ``excluded=False``)."""
+    names = sorted(d for d in os.listdir(data)
+                   if glob.glob(os.path.join(data, d, f"glafic_{d}_*_mulimage.txt")))
+    return names if excluded else [n for n in names if n not in set(excluded_clusters(data))]
+
+
+def summary_table(data=DATA):
+    """{folder: row} from ``data``/venus_clusters_summary.csv ({} if there is none).
+
+    Rows are matched to folders by a 'folder' column if the table has one,
+    otherwise by lens redshift, number of systems and published chi^2 (the
+    readme's values)."""
+    import csv
+    path = os.path.join(data, SUMMARY)
+    if not os.path.exists(path):
+        return {}
+    rows = list(csv.DictReader(open(path)))
+    if rows and "folder" in rows[0]:
+        return {r["folder"].strip(): r for r in rows if r["folder"].strip()}
+    keys = {}
+    for n in available(data):
+        f = find_files(n, data)
+        ref = read_readme(f["readme"])
+        nsys = len({ln.split()[0].split(".")[0] for ln in open(f["mulimage"])
+                    if ln.split() and not ln.lstrip().startswith("#")})
+        keys[(round(ref.get("zl", -1), 3), nsys, ref.get("chi2"))] = n
+    out = {}
+    for r in rows:
+        try:
+            k = (round(float(r["zl"]), 3), int(r["sources"]), float(r["chi2"]))
+        except (KeyError, ValueError):
+            continue
+        if k in keys:
+            out[keys[k]] = r
+    return out
+
+
+def excluded_clusters(data=DATA):
+    """Folders marked in the summary table's 'exclude' column."""
+    return sorted(n for n, r in summary_table(data).items() if (r.get("exclude") or "").strip())
 
 
 def _version(path):
@@ -90,10 +131,14 @@ def _system_id(s):
     return int(sid) if sid.isdigit() else sid
 
 
-def load(name, zl=None, data=DATA):
+def load(name, zl=None, data=DATA, spec_only=False):
     """Read a cluster.  Returns a dict with
     name, zl, center (RA, Dec of the BCG), gals (N x 5: x, y, L, e, PA; BCG first),
-    systems (OrderedDict id -> {zs, zerr, err, errs, ids, xy}), ref (readme info), files."""
+    systems (OrderedDict id -> {zs, zerr, err, errs, ids, xy}), ref (readme info), files,
+    dropped (IDs of the systems left out).
+
+    spec_only: keep only spectroscopically confirmed systems (z_s >= 0 with error 0);
+               drops photometric systems and those without a redshift (z_s = -1)."""
     files = find_files(name, data)
     ref = read_readme(files["readme"])
     zl = ref.get("zl") if zl is None else zl
@@ -118,13 +163,19 @@ def load(name, zl=None, data=DATA):
         if abs(s["zs"] - zs) > 1e-6 or abs(s["zerr"] - zerr) > 1e-6:
             raise ValueError(f"{name}: image {iid} has a different redshift from the rest of its system")
         s["errs"].append(err); s["ids"].append(iid); s["xy"].append((float(x), float(y)))
+    # spectroscopic = a measured redshift with zero error (z_s < 0 marks a system with no redshift)
+    dropped = [sid for sid, s in systems.items() if spec_only and (s["zerr"] != 0 or s["zs"] < 0)]
+    for sid in dropped:
+        del systems[sid]
+    if not systems:
+        raise ValueError(f"{name}: no spectroscopically confirmed systems")
     for sid, s in systems.items():
         if len(s["xy"]) < 2:
             raise ValueError(f"{name}: system {sid} has a single image")
         if s["zs"] <= zl:
             raise ValueError(f"{name}: system {sid} has z_s = {s['zs']} <= z_l = {zl}")
     return dict(name=os.path.basename(os.path.normpath(name)), zl=float(zl), center=(ra0, dec0),
-                gals=gals, systems=systems, ref=ref, files=files)
+                gals=gals, systems=systems, ref=ref, files=files, dropped=dropped)
 
 
 def summary(c):
@@ -137,13 +188,15 @@ def summary(c):
     txt = (f"{c['name']}: z_l = {c['zl']:.3f}; {nimg} images of {len(zs)} systems, "
            f"{min(zs):.2f} < z_s < {max(zs):.2f} ({nphot} photometric); {len(c['gals'])} members; "
            f"images at {r.min():.1f}-{r.max():.1f}\" from the BCG")
+    if c.get("dropped"):
+        txt += f"; left out (no spectroscopic z): systems {', '.join(map(str, c['dropped']))}"
     if "chi2" in c["ref"]:
         txt += f"; published fit chi2 = {c['ref']['chi2']:.2f} for {c['ref']['dof']:.0f} dof"
     return txt
 
 
 def write_all(name, outdir=HERE, prefix=None, zl=None, bcg=False, mpoles=(), shear=True, eta_free=True,
-              pos_err=None, parity=None, fov=None, data=DATA):
+              pos_err=None, parity=None, fov=None, spec_only=False, data=DATA):
     """Write the glafic files for cluster ``name``.  Defaults follow the glafic
     recipe of Oguri et al. (VENUS, 2026, Sec. 2.3): elliptical NFW halo (all 6
     parameters free, 1 < c < 40, e < 0.8), pseudo-Jaffe members with
@@ -164,10 +217,11 @@ def write_all(name, outdir=HERE, prefix=None, zl=None, bcg=False, mpoles=(), she
              images, e.g. both members of a merging pair, which must straddle
              a critical curve.  glafic gives a wrong parity a chi^2 of
              chi2pen_parity (a hard wall); other images stay unconstrained.
+    spec_only: leave out systems with photometric redshifts (see :func:`load`).
     fov    : half-width of the glafic grid [arcsec]; default max(60, 2 x the
              largest image distance from the BCG), rounded up to 10".
     """
-    c = load(name, zl=zl, data=data)
+    c = load(name, zl=zl, data=data, spec_only=spec_only)
     parity = {str(k): int(v) for k, v in (parity or {}).items()}
     known = {iid for s in c["systems"].values() for iid in s["ids"]}
     if set(parity) - known:
@@ -251,8 +305,15 @@ def write_all(name, outdir=HERE, prefix=None, zl=None, bcg=False, mpoles=(), she
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
+        ex = set(excluded_clusters())
         for n in available():
-            print(summary(load(n)))
+            if n in ex:
+                print(f"{n}: excluded in {SUMMARY}")
+                continue
+            try:
+                print(summary(load(n, spec_only=True)))
+            except ValueError as err:
+                print(f"{n}: {err}")
         sys.exit(0)
     out = sys.argv[2] if len(sys.argv) > 2 else os.path.join(HERE, sys.argv[1])
     s = write_all(sys.argv[1], out)

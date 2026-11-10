@@ -1,0 +1,16 @@
+# Region file format: DS9 version 4.1
+global color=green font="helvetica 8 normal roman"
+fk5
+circle(197.755539948337,-3.17600008888889,0.4") # width=2 text={1.1} color=magenta
+circle(197.756897034981,-3.17728897777778,0.4") # width=2 text={1.2} color=magenta
+circle(197.763604014236,-3.17918592222222,0.4") # width=2 text={1.3} color=magenta
+circle(197.765360882246,-3.17736092222222,0.4") # width=2 text={2.1} color=magenta
+circle(197.75519886834,-3.17971897777778,0.4") # width=2 text={2.2} color=magenta
+circle(197.75873013131,-3.17497786666667,0.4") # width=2 text={3.1} color=magenta
+circle(197.761644056178,-3.17893286666667,0.4") # width=2 text={3.2} color=magenta
+circle(197.759620110846,-3.18095703333333,0.4") # width=2 text={3.3} color=magenta
+circle(197.751993384062,-3.1779587,0.4") # width=2 text={3.4} color=magenta
+circle(197.75192049421,-3.17531481111111,0.4") # width=2 text={4.1} color=magenta
+circle(197.7589805163,-3.17278786666667,0.4") # width=2 text={4.2} color=magenta
+circle(197.757528005155,-3.18125592222222,0.4") # width=2 text={4.3} color=magenta
+circle(197.763114650684,-3.17722536666667,0.4") # width=2 text={4.4} color=magenta
