@@ -51,9 +51,13 @@ lists what it finds (`python build_cluster.py`).
 * an elliptical NFW halo, with all 6 parameters free;
 * pseudo-Jaffe members with σ ∝ L^1/4 and r_trun ∝ L^η, where σ*, r_trun* and
   η are free;
-* external shear;
+* external shear (`shear`, on by default);
 * optional multipoles centred on the BCG (`mpoles`) and an optional separate
-  BCG (`bcg`), set per cluster in `CLUSTER_MODEL`.
+  BCG (`bcg`).
+
+These are set per cluster in `CLUSTER_MODEL`. Drop the shear when it is
+consistent with zero: its angle is then unconstrained, and the amplitude–angle
+pair forms a funnel at γ = 0 that NUTS samples poorly.
 
 For RXJ2129, the base recipe reproduces the published fit but fails to form
 the image pair 3.2/3.3, and an m = 3 multipole fixes that. For a new cluster,
@@ -122,9 +126,11 @@ print("clusters in example_data/:", build.available())
 CLUSTER = os.environ.get("GLAFIC_CLUSTER", "rj2129")   # folder name in example_data/
 CLUSTER_MODEL = {                 # per-cluster additions to the base recipe
     "rj2129": dict(mpoles=[(3, 2)]),       # m = 3 needed to form images 3.2/3.3
+    "mj0429": dict(shear=False),           # γ_ext = 0.012 ± 0.012: free shear only adds an unconstrained angle
 }
 MPOLES = CLUSTER_MODEL.get(CLUSTER, {}).get("mpoles", [])   # (m, n) multipoles centred on the BCG
 BCG = CLUSTER_MODEL.get(CLUSTER, {}).get("bcg", False)      # model the BCG separately
+SHEAR = CLUSTER_MODEL.get(CLUSTER, {}).get("shear", True)   # external shear (amplitude, angle)
 MAG_CAP = 0.0                     # 0 = glafic's exact source-plane chi2 (do not cap; see above)
 POS_ERR0 = 0.4                    # catalogue positional error [arcsec], before rescaling
 CALIBRATE_ERRORS = True           # rescale errors so that the LCDM best fit has chi2/dof = 1
@@ -134,7 +140,7 @@ NFW_ALPHA_R = None                # [arcsec]; None = median image distance from 
 NFW_ALPHA_ZS = None               # source z for the deflection; None = median z_s
 COSMO_REPARAM = {"wa": ("offset", "weos", -3.0, 0.0)}   # sample w0 + wa in [-3, 0)
 NUTS_KW = dict(num_chains=4, num_warmup=1000, num_samples=1000, target_accept=0.95,
-               max_tree_depth=8, init="map", init_jitter=0.01, use_approx_mass=False, chunk=250)
+               max_tree_depth=10, init="map", init_jitter=0.01, use_approx_mass=False, chunk=250)
 AIES_KW = dict(num_warmup=5000, num_samples=5000, thinning=5, init_jitter=0.005, chunk=1000)
 RUN_A, RUN_B, RUN_C, RUN_D = True, True, True, True
 SMOKE_TEST = False                # tiny runs, to check that the notebook works end to end
@@ -166,7 +172,8 @@ REPARAM = {"lens1_anfw_p2": ("nfw_alpha", NFW_ALPHA_R, NFW_ALPHA_ZS) if USE_NFW_
            "lens2_gals_p7": "log10"}          # member truncation radius: flat in log10
 
 # results folder for this model setup
-TAG = "_".join(["base"] + [f"mpole{m}{n}" for m, n in MPOLES] + (["bcg"] if BCG else [])
+TAG = "_".join(["base"] + ([] if SHEAR else ["noshear"]) + [f"mpole{m}{n}" for m, n in MPOLES]
+               + (["bcg"] if BCG else [])
                + [f"nfwa{NFW_ALPHA_R:g}z{NFW_ALPHA_ZS:g}" if USE_NFW_ALPHA else "log10M"])
 RUN_DIR = os.path.join(RESULTS, TAG)
 os.makedirs(RUN_DIR, exist_ok=True)
@@ -174,7 +181,7 @@ print(f"model: {TAG}  ->  {RUN_DIR}")
 
 
 def write_files(outdir, pos_err):
-    return build.write_all(CLUSTER, outdir, mpoles=MPOLES, bcg=BCG, pos_err=pos_err)
+    return build.write_all(CLUSTER, outdir, mpoles=MPOLES, bcg=BCG, shear=SHEAR, pos_err=pos_err)
 
 
 write_files(RUN_DIR, POS_ERR0)
@@ -241,7 +248,7 @@ PLAB = {("anfw", 2): "M_vir [M_sun/h]", ("anfw", 3): "x_halo", ("anfw", 4): "y_h
         ("gals", 2): "σ* [km/s]", ("gals", 7): "r_trun* [arcsec]", ("gals", 8): "η",
         ("pert", 5): "γ_ext", ("pert", 6): "θ_γ", ("jaffe", 2): "σ_BCG [km/s]", ("jaffe", 7): "r_trun,BCG"}
 COSMO_LAB = {"omega": "Ω_m", "weos": "w0", "wa": "wa", "hubble": "h", "lambda": "Ω_Λ"}
-N_BASE = 3 + int(BCG)                                  # lenses before the multipoles
+N_BASE = 2 + int(SHEAR) + int(BCG)                     # lenses before the multipoles
 
 
 def label(n):
@@ -592,8 +599,8 @@ md(r"""
   have not constrained that parameter. Clusters with many spectroscopic
   systems over a wide redshift range constrain it best.
 * **Assumptions worth testing:**
-  * the mass-model family, for example adding multipoles or a separate BCG
-    (`CLUSTER_MODEL`);
+  * the mass-model family, for example adding multipoles or a separate BCG,
+    or dropping the shear (`CLUSTER_MODEL`);
   * one common positional error for all images;
   * the photometric-redshift ranges (±4σ, flat).
 * **Validation.** Trust stage D only if stage C agrees and its own

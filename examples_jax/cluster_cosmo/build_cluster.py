@@ -142,8 +142,8 @@ def summary(c):
     return txt
 
 
-def write_all(name, outdir=HERE, prefix=None, zl=None, bcg=False, mpoles=(), eta_free=True, pos_err=None,
-              fov=None, data=DATA):
+def write_all(name, outdir=HERE, prefix=None, zl=None, bcg=False, mpoles=(), shear=True, eta_free=True,
+              pos_err=None, fov=None, data=DATA):
     """Write the glafic files for cluster ``name``.  Defaults follow the glafic
     recipe of Oguri et al. (VENUS, 2026, Sec. 2.3): elliptical NFW halo (all 6
     parameters free, 1 < c < 40, e < 0.8), pseudo-Jaffe members with
@@ -158,6 +158,8 @@ def write_all(name, outdir=HERE, prefix=None, zl=None, bcg=False, mpoles=(), eta
              the 'gals' member catalogue.
     mpoles : sequence of (m, n) multipole perturbations ('mpole') centred on
              the BCG, with amplitude and angle free.
+    shear  : include the external shear ('pert', amplitude and angle free).
+             Lenses are numbered anfw, gals, [pert], [jaffe], [mpole...].
     fov    : half-width of the glafic grid [arcsec]; default max(60, 2 x the
              largest image distance from the BCG), rounded up to 10".
     """
@@ -188,10 +190,11 @@ def write_all(name, outdir=HERE, prefix=None, zl=None, bcg=False, mpoles=(), eta
              f"galfile   {prefix}_galfile.dat",
              "chi2_splane    1", "chi2_checknimg 0",
              "flatfix   1", "ovary     1", "wvary     1", "wavary    1", "hvary     0",
-             "", f"startup {3 + int(bcg) + len(mpoles)} 0 {len(systems)}",
+             "", f"startup {2 + int(shear) + int(bcg) + len(mpoles)} 0 {len(systems)}",
              f"lens anfw  {zl} 8.0e14  0.0  0.0  0.4  -20.0  6.0  0.0",
-             f"lens gals  {zl} 200.0   0.0  0.0  0.0    0.0 20.0  1.0",
-             f"lens pert  {zl} 2.0     0.0  0.0  0.05  30.0  0.0  0.0"]
+             f"lens gals  {zl} 200.0   0.0  0.0  0.0    0.0 20.0  1.0"]
+    if shear:
+        lines.append(f"lens pert  {zl} 2.0     0.0  0.0  0.05  30.0  0.0  0.0")
     if bcg:
         lines.append(f"lens jaffe {zl} 300.0   0.0  0.0  {bcg_row[3]:.3f} {bcg_row[4]:.1f}  10.0  0.01")
     for (mm, nn) in mpoles:
@@ -201,8 +204,9 @@ def write_all(name, outdir=HERE, prefix=None, zl=None, bcg=False, mpoles=(), eta
         lines.append(f"point {s['zs']:.4f} {cxy[0]:.4f} {cxy[1]:.4f}")
     lines += ["end_startup", "", "start_setopt",
               "0 1 1 1 1 1 1 0",      # anfw: M, x, y, e, PA, c
-              "0 1 0 0 0 0 1 %d" % int(eta_free),   # gals: sigma*, r_trunc*, eta
-              "0 0 0 0 1 1 0 0"]      # pert: gamma, theta
+              "0 1 0 0 0 0 1 %d" % int(eta_free)]   # gals: sigma*, r_trunc*, eta
+    if shear:
+        lines.append("0 0 0 0 1 1 0 0")       # pert: gamma, theta
     if bcg:
         lines.append("0 1 0 0 0 0 1 0")       # BCG: sigma, truncation radius
     for _ in mpoles:
@@ -215,13 +219,14 @@ def write_all(name, outdir=HERE, prefix=None, zl=None, bcg=False, mpoles=(), eta
     # Angles get a wide range here (no hard wall); the sampler restricts them to
     # one period around the best fit (period 180 deg for ellipses/shear,
     # 360/m for multipoles) to avoid the exact angle degeneracy.
-    nl = 3 + int(bcg)
+    ib = 3 + int(shear)                                # BCG lens index (if any)
+    nl = 2 + int(shear) + int(bcg)                     # lenses before the multipoles
     prior = ["# parameter ranges (flat priors inside); Oguri et al. VENUS recipe",
              "range lens 1 2 1.0e13 1.0e16", "range lens 1 3 -15.0 15.0", "range lens 1 4 -15.0 15.0",
              "range lens 1 5 0.0 0.8", "range lens 1 6 -720.0 720.0", "range lens 1 7 1.0 40.0",
              "range lens 2 2 100.0 400.0", "range lens 2 7 1.0 100.0", "range lens 2 8 0.2 1.5",
-             "range lens 3 5 0.0 0.5", "range lens 3 6 -720.0 720.0",
-             *(["range lens 4 2 50.0 800.0", "range lens 4 7 0.1 300.0"] if bcg else []),
+             *(["range lens 3 5 0.0 0.5", "range lens 3 6 -720.0 720.0"] if shear else []),
+             *([f"range lens {ib} 2 50.0 800.0", f"range lens {ib} 7 0.1 300.0"] if bcg else []),
              *sum(([f"range lens {nl + 1 + q} 5 0.0 0.5", f"range lens {nl + 1 + q} 6 -720.0 720.0"]
                    for q in range(len(mpoles))), []),
              "range omega 0.05 1.0", "range weos -2.5 0.0", "range wa -10.0 10.0"]
