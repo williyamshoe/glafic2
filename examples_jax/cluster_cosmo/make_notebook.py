@@ -55,7 +55,13 @@ lists what it finds (`python build_cluster.py`).
 * optional multipoles centred on the BCG (`mpoles`) and an optional separate
   BCG (`bcg`).
 
-These are set per cluster in `CLUSTER_MODEL`. Drop the shear when it is
+These are set per cluster in `CLUSTER_MODEL`, together with optional
+**image parities** (`parity`, the sign of 1/μ). The source-plane χ² does not
+check which side of a critical curve an image lies on. For an image pair
+merging across a critical curve, this lets the posterior split into a
+physical mode, with the curve between the two images, and an unphysical one.
+Fixing their parities (opposite signs) removes the wrong mode; section 7
+lists the close pairs and suggests the signs. Drop the shear when it is
 consistent with zero: its angle is then unconstrained, and the amplitude–angle
 pair forms a funnel at γ = 0 that NUTS samples poorly.
 
@@ -126,11 +132,13 @@ print("clusters in example_data/:", build.available())
 CLUSTER = os.environ.get("GLAFIC_CLUSTER", "rj2129")   # folder name in example_data/
 CLUSTER_MODEL = {                 # per-cluster additions to the base recipe
     "rj2129": dict(mpoles=[(3, 2)]),       # m = 3 needed to form images 3.2/3.3
-    "mj0429": dict(shear=False),           # γ_ext = 0.012 ± 0.012: free shear only adds an unconstrained angle
+    "mj0429": dict(shear=False,            # γ_ext = 0.012 ± 0.012: free shear only adds an unconstrained angle
+                   parity={"3.3": -1, "3.4": +1}),   # merging pair: curve between them (section 7)
 }
 MPOLES = CLUSTER_MODEL.get(CLUSTER, {}).get("mpoles", [])   # (m, n) multipoles centred on the BCG
 BCG = CLUSTER_MODEL.get(CLUSTER, {}).get("bcg", False)      # model the BCG separately
 SHEAR = CLUSTER_MODEL.get(CLUSTER, {}).get("shear", True)   # external shear (amplitude, angle)
+PARITY = CLUSTER_MODEL.get(CLUSTER, {}).get("parity", {})   # {image ID: ±1} required sign of 1/μ
 MAG_CAP = 0.0                     # 0 = glafic's exact source-plane chi2 (do not cap; see above)
 POS_ERR0 = 0.4                    # catalogue positional error [arcsec], before rescaling
 CALIBRATE_ERRORS = True           # rescale errors so that the LCDM best fit has chi2/dof = 1
@@ -174,6 +182,7 @@ REPARAM = {"lens1_anfw_p2": ("nfw_alpha", NFW_ALPHA_R, NFW_ALPHA_ZS) if USE_NFW_
 # results folder for this model setup
 TAG = "_".join(["base"] + ([] if SHEAR else ["noshear"]) + [f"mpole{m}{n}" for m, n in MPOLES]
                + (["bcg"] if BCG else [])
+               + (["par" + "-".join(sorted(PARITY))] if PARITY else [])
                + [f"nfwa{NFW_ALPHA_R:g}z{NFW_ALPHA_ZS:g}" if USE_NFW_ALPHA else "log10M"])
 RUN_DIR = os.path.join(RESULTS, TAG)
 os.makedirs(RUN_DIR, exist_ok=True)
@@ -181,7 +190,8 @@ print(f"model: {TAG}  ->  {RUN_DIR}")
 
 
 def write_files(outdir, pos_err):
-    return build.write_all(CLUSTER, outdir, mpoles=MPOLES, bcg=BCG, shear=SHEAR, pos_err=pos_err)
+    return build.write_all(CLUSTER, outdir, mpoles=MPOLES, bcg=BCG, shear=SHEAR, parity=PARITY,
+                           pos_err=pos_err)
 
 
 write_files(RUN_DIR, POS_ERR0)
@@ -289,7 +299,15 @@ def stage_a(cap, start=None, n_starts=N_STARTS):
     write_files(capdir(cap), POS_ERR0)
     m = make_model(cap, **(start or {}))
     m.set_source_mode("profile")
-    r = gj.Pipeline(m, reparam=REPARAM).map(n_starts=n_starts, jitter=0.5, seed=0, verbose=False)
+    pipe = gj.Pipeline(m, reparam=REPARAM)
+    for k, (ns, jit) in enumerate([(n_starts, 0.5), (4 * n_starts, 1.0), (8 * n_starts, 1.5)]):
+        try:       # with PARITY, starts on the wrong side of a critical curve are invalid and skipped
+            r = pipe.map(n_starts=ns, jitter=jit, seed=k, verbose=False)
+            break
+        except ValueError as err:
+            print(f"MAP attempt {k + 1}: {err}; retrying with more, wider starts")
+    else:
+        raise RuntimeError("no starting point satisfies the parity constraints; check PARITY signs")
     P = m.best_sources(m.unflatten(jnp.asarray(r["theta"])))
     dof = dof_of(m)
     sig = POS_ERR0 * np.sqrt(r["chi2"] / dof) if CALIBRATE_ERRORS else POS_ERR0
@@ -584,6 +602,152 @@ if nuts_w is not None:
         n_ok += good; rms.append(np.sqrt(np.mean(d2)))
     print(f"{n_ok}/{nd} draws form at least the observed number of images in every system;  "
           f"image-plane rms = {np.mean(rms):.3f} ± {np.std(rms):.3f} arcsec")
+""")
+
+md(r"""
+## 7. Sampler diagnostics: divergences and near-critical images
+
+Reads the saved chains; nothing is resampled. For every posterior sample, it
+computes the magnification of each *observed* image position. An image whose
+|μ| reaches the hundreds sits on a critical curve, where the source-plane χ²
+is extremely sharp. If the divergences pile up where that image's |μ| blows
+up, that image is what limits NUTS.
+
+* **Table:** images whose |μ| exceeds `MU_FLAG` in more than 5% of samples.
+  "parity flips" is the fraction of samples in which the image is on the other
+  side of the critical curve from the majority.
+* **Divergence test:** the divergence rate among the 10% of samples with the
+  largest |μ| of the worst image, compared with the rest.
+* **Close pairs:** every pair of images in the same system closer than
+  `PAIR_SEP`. A pair merging across a critical curve must have opposite
+  parities; samples where they share a sign are an unphysical mode. If one
+  image of the pair keeps its parity, the suggested `parity` setting for
+  `CLUSTER_MODEL` is printed. Images already constrained by `PARITY` are
+  checked too: their violation fraction should be 0%.
+* **Plots:** M_vir vs e_halo, and e_halo vs the signed 1/μ of the worst image
+  (the critical curve is 1/μ = 0), with divergent samples in red; then the
+  e_halo trace for each chain.
+""")
+
+code(r"""
+MU_FLAG = 100.0                   # |μ| above which an observed image counts as near-critical
+PAIR_SEP = 2.0                    # [arcsec] images of one system closer than this are checked as a pair
+IMG_IDS = [iid for s in systems.values() for iid in s["ids"]]   # same order as the obs file
+CLOSE_PAIRS = [(s["ids"][a], s["ids"][b]) for s in systems.values()
+               for a in range(len(s["ids"])) for b in range(a + 1, len(s["ids"]))
+               if np.hypot(*np.subtract(s["xy"][a], s["xy"][b])) < PAIR_SEP]
+
+
+def mu_scan(res, model, batch=500):
+    # signed 1/μ at every observed image position for every saved sample -> [n_samples, n_images]
+    names = list(res["names"])
+    if names != list(model.theta_names):
+        raise ValueError("chain parameters do not match the model's")
+    th = np.asarray(res["theta"]).reshape(-1, len(names))
+    obs = [np.asarray(model.obs_point[i]["tab"]) for i in range(model.num_poi)]
+
+    ls = model.lens_system
+
+    def one(t):
+        P = model.unflatten(t)
+        # nlp (lens planes in front of the source) must be concrete under vmap: use the precomputed one
+        return jnp.concatenate([ls.ray_shoot(jnp.asarray(o[:, 0]), jnp.asarray(o[:, 1]), P["lens"],
+                                             P["point"][i, 0], P["cosmo"], nlp=int(model.nlp_point[i])).muinv
+                                for i, o in enumerate(obs)])
+    f = jax.jit(jax.vmap(one))
+    return np.concatenate([np.asarray(f(jnp.asarray(th[k:k + batch]))) for k in range(0, len(th), batch)])
+
+
+def sampler_diagnostics(title, res, model):
+    names = list(res["names"]); nd = len(names)
+    th3 = np.asarray(res["theta"]).reshape(-1, *np.shape(res["theta"])[-2:]) if np.ndim(res["theta"]) == 3 \
+        else np.asarray(res["theta"])[None]
+    th = th3.reshape(-1, nd)
+    div = np.asarray(res["diverging"]).reshape(-1).astype(bool)
+    t0 = time.time()
+    muinv = mu_scan(res, model)
+    amu = 1.0 / np.maximum(np.abs(muinv), 1e-12)
+    print(f"=== {title}: {len(th)} samples, {div.sum()} divergent; |μ| scan {time.time() - t0:.0f} s")
+
+    # near-critical images
+    print(f"{'image':>6s} {'median |μ|':>11s} {'95% |μ|':>9s} {'f(|μ|>' + f'{MU_FLAG:g}' + ')':>11s} "
+          f"{'parity flips':>13s} {'median |μ| (div)':>17s}")
+    near = []
+    for j, iid in enumerate(IMG_IDS):
+        frac = np.mean(amu[:, j] > MU_FLAG)
+        if frac < 0.05:
+            continue
+        near.append(iid)
+        sgn = np.sign(muinv[:, j]); flips = min(np.mean(sgn > 0), np.mean(sgn < 0))
+        mdiv = f"{np.median(amu[div, j]):17.1f}" if div.any() else f"{'-':>17s}"
+        print(f"{iid:>6s} {np.median(amu[:, j]):11.1f} {np.percentile(amu[:, j], 95):9.1f} {frac:11.2f} "
+              f"{flips:13.3f} {mdiv}")
+    if not near:
+        print(f"   no image has |μ| > {MU_FLAG:g} in more than 5% of samples")
+
+    # close pairs: a pair merging across a critical curve must have opposite parity
+    pos = lambda iid: np.mean(muinv[:, IMG_IDS.index(iid)] > 0)      # fraction with 1/μ > 0
+    for a, b in CLOSE_PAIRS:
+        same = np.mean(np.sign(muinv[:, IMG_IDS.index(a)]) == np.sign(muinv[:, IMG_IDS.index(b)]))
+        msg = f"close pair {a}/{b}: 1/μ > 0 in {pos(a):.0%} / {pos(b):.0%} of samples; same parity in {same:.0%}"
+        if same > 0.01:
+            stable = [i for i in (a, b) if min(pos(i), 1 - pos(i)) < 0.01]
+            if stable:
+                sa = 1 if pos(stable[0]) > 0.5 else -1
+                other = b if stable[0] == a else a
+                msg += (f"  ->  unphysical mode; suggested: parity={{\"{stable[0]}\": {sa:+d}, "
+                        f"\"{other}\": {-sa:+d}}}")
+            else:
+                msg += "  ->  both images flip; fix the signs from the best fit, or drop the pair"
+        print(msg)
+    for iid, p in PARITY.items():
+        bad = np.mean(np.sign(muinv[:, IMG_IDS.index(iid)]) != p)
+        print(f"parity constraint {iid} = {p:+d}: violated in {bad:.1%} of samples"
+              + ("" if bad == 0 else "  <- the wall is leaking; check the sign convention"))
+
+    # divergences vs the worst image's magnification
+    jw = int(np.argmax(np.median(amu, axis=0)))
+    if div.any():
+        top = amu[:, jw] >= np.percentile(amu[:, jw], 90)
+        print(f"divergence rate: {100 * div[top].mean():.1f}% in the 10% of samples with the largest |μ| of "
+              f"image {IMG_IDS[jw]}, {100 * div[~top].mean():.1f}% in the rest")
+
+    # chains: per-chain means of the worst-mixing parameters
+    keep = [k for k, n in enumerate(names) if not is_source(n)]
+    worst = sorted(keep, key=lambda k: -np.nan_to_num(res["rhat"][k]))[:4]
+    print("per-chain means (worst R-hat):")
+    for k in worst:
+        print(f"   {label(names[k]):22s} R-hat {res['rhat'][k]:.3f}: "
+              + "  ".join(f"{v:.4g}" for v in th3[:, :, k].mean(axis=1)))
+
+    kM, ke = names.index("lens1_anfw_p2"), names.index("lens1_anfw_p5")
+    fig, axs = plt.subplots(1, 3, figsize=(15, 4.2))
+    ax = axs[0]
+    ax.scatter(th[~div, kM], th[~div, ke], s=2, c="0.6", alpha=0.4, label="samples")
+    ax.scatter(th[div, kM], th[div, ke], s=12, c="tab:red", label="divergent")
+    ax.set_xlabel(label(names[kM])); ax.set_ylabel(label(names[ke])); ax.legend(fontsize=8)
+    ax = axs[1]
+    ax.scatter(muinv[~div, jw], th[~div, ke], s=2, c="0.6", alpha=0.4)
+    ax.scatter(muinv[div, jw], th[div, ke], s=12, c="tab:red")
+    ax.axvline(0.0, color="k", lw=0.8, ls=":")
+    ax.set_xlabel(f"1/μ of image {IMG_IDS[jw]} (0 = critical curve)"); ax.set_ylabel(label(names[ke]))
+    ax = axs[2]
+    for ci in range(th3.shape[0]):
+        ax.plot(th3[ci, :, ke], lw=0.5, label=f"chain {ci}")
+    ax.set_xlabel("sample"); ax.set_ylabel(label(names[ke])); ax.legend(fontsize=7)
+    fig.suptitle(f"{CLUSTER}: {title}")
+    plt.tight_layout(); plt.show()
+    return dict(muinv=muinv, near=near, worst_image=IMG_IDS[jw])
+
+
+diag = {}
+if nuts_lcdm is not None:
+    diag["ΛCDM"] = sampler_diagnostics("ΛCDM NUTS", nuts_lcdm, lcdm_model(MAG_CAP))
+if nuts_w is not None:
+    c = calib[MAG_CAP]
+    mw = make_model(MAG_CAP, cosmology_free=True, lens=c["lens"], poi=c["poi"])
+    mw.set_source_mode("marginalize")
+    diag["w0waCDM"] = sampler_diagnostics("w0waCDM NUTS", nuts_w, mw)
 """)
 
 md(r"""
