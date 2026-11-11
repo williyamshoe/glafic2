@@ -51,8 +51,9 @@ fit.
 Clusters marked in the `exclude` column of
 `example_data/venus_clusters_summary.csv` are judged too complex or not
 worth modelling. The notebook refuses to run one unless `RUN_EXCLUDED = True`.
-Rows are matched to folders by lens redshift, number of systems and published
-χ², or by a `folder` column if you add one.
+`python build_cluster.py` lists which clusters are excluded.
+Rows are matched to folders by the table's `glafic_name` column (the folder
+name); a new cluster needs a row there to be excluded.
 
 To add a cluster, drop a new folder in `example_data/`. `build_cluster.py`
 lists what it finds (`python build_cluster.py`).
@@ -114,11 +115,14 @@ sharply peaked, so NUTS needs long warmup and a high target acceptance. Do
 
 ### Stages
 
-Each stage caches its result in `results/<cluster>/<model tag>/`, and
-re-running skips finished stages. Every cluster gets its own folder, and
-changing the multipoles, the BCG or the halo-mass parameterization changes the
-model tag, so stale chains are never reused. Each cached file also records its
-cluster and model tag, and loading one into a different run raises an error.
+Everything for a cluster goes in one folder, `results/<cluster>/`: the glafic
+input files, the cached result of each stage (re-running skips finished
+stages) and every figure as a PNG. The folder holds one model setup at a time.
+`setup.json` records its model tag, which changes with the multipoles, the
+BCG, the shear, the parities, `SPEC_ONLY` and the halo-mass parameterization.
+Running a different setup into the same folder stops with an error instead
+of reusing stale results; move or rename the folder to keep both. Each cached
+file also records its cluster and model tag.
 
 | stage | what | cost (laptop CPU) |
 |---|---|---|
@@ -150,14 +154,11 @@ import jax, jax.numpy as jnp
 import build_cluster as build
 
 print("jax", jax.__version__, "| backend:", jax.default_backend(), "| devices:", jax.devices())
-EXCLUDED = build.excluded_clusters()      # marked in example_data/venus_clusters_summary.csv
-print("clusters to model:", build.available(excluded=False))
-print("excluded:", EXCLUDED)
 
 # ---------------- configuration ----------------
 CLUSTER = os.environ.get("GLAFIC_CLUSTER", "rj2129")   # folder name in example_data/
 RUN_EXCLUDED = False              # allow a cluster marked in the summary table's 'exclude' column
-if CLUSTER in EXCLUDED and not RUN_EXCLUDED:
+if build.is_excluded(CLUSTER) and not RUN_EXCLUDED:   # marked in example_data/venus_clusters_summary.csv
     raise ValueError(f"{CLUSTER} is excluded in venus_clusters_summary.csv; set RUN_EXCLUDED = True to run it")
 CLUSTER_MODEL = {                 # per-cluster additions to the base recipe
     "rj2129": dict(mpoles=[(3, 2)]),       # m = 3 needed to form images 3.2/3.3
@@ -178,7 +179,8 @@ N_STARTS = 16                     # jittered L-BFGS starts for the MAP
 USE_NFW_ALPHA = True              # halo mass: sample log10 of the NFW deflection at R (straightens M-c)
 NFW_ALPHA_R = None                # [arcsec]; None = median image distance from the BCG
 NFW_ALPHA_ZS = None               # source z for the deflection; None = median z_s
-COSMO_REPARAM = {"wa": ("offset", "weos", -3.0, 0.0)}   # sample w0 + wa in [-3, 0)
+COSMO_REPARAM = {"wa": ("sum_below", "weos", -3.0, 2.0, 0.0)}   # DESI: wa in [-3, 2], w0 + wa < 0
+W_PRIOR = "desi"                  # tag of the w0/wa prior in the chain file names (w0 in [-3, 1]: prior file)
 NUTS_KW = dict(num_chains=4, num_warmup=1000, num_samples=1000, target_accept=0.95,
                max_tree_depth=10, init="map", init_jitter=0.01, use_approx_mass=False, chunk=250)
 AIES_KW = dict(num_warmup=5000, num_samples=5000, thinning=5, init_jitter=0.005, chunk=1000)
@@ -223,10 +225,25 @@ REPARAM = {"lens1_anfw_p2": ("nfw_alpha", NFW_ALPHA_R, NFW_ALPHA_ZS) if USE_NFW_
 TAG = "_".join(["base"] + (["speconly"] if SPEC_ONLY else []) + ([] if SHEAR else ["noshear"]) + [f"mpole{m}{n}" for m, n in MPOLES]
                + (["bcg"] if BCG else [])
                + (["autopar"] if PARITY == "auto" else ["mupar" + "-".join(sorted(PARITY))] if PARITY else [])
+               + ([f"cap{MAG_CAP:g}"] if MAG_CAP else [])
                + [f"nfwa{NFW_ALPHA_R:g}z{NFW_ALPHA_ZS:g}" if USE_NFW_ALPHA else "log10M"])
-RUN_DIR = os.path.join(RESULTS, TAG)
+RUN_DIR = RESULTS                 # every file of this cluster: results/<cluster>/
 os.makedirs(RUN_DIR, exist_ok=True)
+_setup = os.path.join(RUN_DIR, "setup.json")
+if os.path.exists(_setup):        # one model setup per folder: never mix results of different setups
+    _old = json.load(open(_setup)).get("tag")
+    if _old != TAG:
+        raise ValueError(f"{RUN_DIR} holds results of model {_old!r}, not {TAG!r}; move or rename it "
+                         f"(e.g. to {RESULTS}_{_old}) before running this setup")
+else:
+    json.dump(dict(cluster=CLUSTER, tag=TAG), open(_setup, "w"))
 print(f"model: {TAG}  ->  {RUN_DIR}")
+
+
+def show(name):
+    # save the current figure as results/<cluster>/<name>.png, then display it
+    plt.savefig(os.path.join(RUN_DIR, f"{name}.png"), dpi=150, bbox_inches="tight")
+    plt.show()
 
 
 def write_files(outdir, pos_err):
@@ -249,14 +266,12 @@ for k, (sid, s) in enumerate(systems.items()):
 ax.set_xlim(LIM, -LIM); ax.set_ylim(-LIM, LIM); ax.set_aspect("equal")
 ax.set_xlabel("x [arcsec] (west →)"); ax.set_ylabel("y [arcsec]"); ax.legend(fontsize=7, ncol=2)
 ax.set_title(CLUSTER)
-plt.show()
+show("images")
 """)
 
 code(r"""
 def capdir(cap):
-    d = os.path.join(RUN_DIR, f"cap{cap:g}")
-    os.makedirs(d, exist_ok=True)
-    return d
+    return RUN_DIR                # one folder per cluster (a non-zero MAG_CAP is part of the model tag)
 
 
 def make_model(cap, cosmology_free=False, lens=None, poi=None):
@@ -435,6 +450,7 @@ t0 = time.time()
 calib = {MAG_CAP: stage_a(MAG_CAP)}        # cached after the first run; every later stage needs it
 print(f"stage A: {time.time() - t0:.0f} s")
 PARITY_FIX = {k: int(v) for k, v in calib[MAG_CAP]["parity"].items()}   # in force from here on
+write_files(capdir(MAG_CAP), calib[MAG_CAP]["sigma"])   # current priors/settings, also for a cached stage A
 print(f"parity constraints{' (automatic)' if PARITY == 'auto' else ''}: "
       + (", ".join(f"{k}: {v:+d}" for k, v in PARITY_FIX.items()) or "none"))
 for cap, c in calib.items():
@@ -486,7 +502,7 @@ for i in range(m.num_poi):
     ax.scatter(pred[:, 0], pred[:, 1], marker="x", color=cmap(i % 20), s=30)
 ax.set_xlim(LIM, -LIM); ax.set_ylim(-LIM, LIM); ax.set_aspect("equal"); ax.legend(fontsize=8)
 ax.set_title(f"{CLUSTER}: ΛCDM best fit")
-plt.show()
+show("best_fit")
 rms = np.sqrt(np.mean(np.square(offs)))
 print(f"image-plane rms = {rms:.3f} arcsec (expect ~{c['sigma']:.2f}); median |μ| = {np.median(mus):.1f}; "
       f"systems with missing images: {missing or 'none'}")
@@ -617,18 +633,19 @@ md(r"""
 Ω_m, w0 and wa are sampled jointly with the mass model, with flat priors on:
 
 * Ω_m ∈ [0.05, 1];
-* w0 ∈ [−2.5, 0];
-* **w0 + wa ∈ [−3, 0)**.
+* w0 ∈ [−3, 1] and wa ∈ [−3, 2], with **w0 + wa < 0** (DESI's convention).
 
-Sampling w0 + wa directly builds the condition w0 + wa < 0 (dark energy
-subdominant at early times) into the parameter space, instead of a hard
-wall in the posterior. The chains start at the ΛCDM best fit, with
+The condition w0 + wa < 0 (dark energy subdominant at early times) cuts the
+(w0, wa) box diagonally. wa is sampled as the fraction of its allowed range
+at the current w0 (`sum_below` in `COSMO_REPARAM`), with the Jacobian
+included, so the prior is exactly flat in (w0, wa) and there is no wall in
+the posterior. The chains start at the ΛCDM best fit, with
 (Ω_m, w0, wa) = (0.3, −1, 0).
 """)
 
 code(r"""
 def w0wa_stage(cap, run):
-    path = os.path.join(capdir(cap), "nuts_w0wa.npz")
+    path = os.path.join(capdir(cap), f"nuts_w0wa_{W_PRIOR}.npz")
     if not run or os.path.exists(path):
         return load_npz(path)
     c = calib[cap]
@@ -650,7 +667,7 @@ import corner
 COS = ("omega", "weos", "wa")
 COS_LAB = [r"$\Omega_m$", r"$w_0$", r"$w_a$", r"$w_0+w_a$"]
 COS_TXT = ["Ω_m", "w0", "wa", "w0+wa"]
-RANGE = [(0.05, 1.0), (-2.5, 0.0), (-3.0, 3.0), (-3.0, 0.0)]
+RANGE = [(0.05, 1.0), (-3.0, 1.0), (-3.0, 2.0), (-6.0, 0.0)]
 
 
 def cosmo_samples(res):
@@ -670,13 +687,13 @@ if runs:
     corner.overplot_lines(fig, [0.3, -1.0, 0.0, -1.0], color="0.5", ls=":")
     fig.legend(handles=[plt.Line2D([], [], color=c) for _, _, c in runs], labels=[l for l, _, _ in runs],
                loc="upper right")
-    plt.show()
+    show("w0wa_corner")
     for lab, res, _ in runs:
         print(lab)
         for cl_, v in zip(COS_TXT, cosmo_samples(res).T):
             q = np.percentile(v, [2.5, 16, 50, 84, 97.5])
             print(f"   {cl_:6s} median {q[2]: .3f}   68%: [{q[1]: .3f}, {q[3]: .3f}]   95%: [{q[0]: .3f}, {q[4]: .3f}]")
-    print("\nPrior box: Ω_m ∈ [0.05, 1], w0 ∈ [-2.5, 0], w0+wa ∈ [-3, 0).  Intervals that fill the box "
+    print("\nPrior (DESI): Ω_m ∈ [0.05, 1], w0 ∈ [-3, 1], wa ∈ [-3, 2], w0+wa < 0.  Intervals that fill the box "
           "are prior-dominated, not constraints.")
 """)
 
@@ -735,7 +752,7 @@ if nuts_lcdm is not None:
                             label_kwargs=dict(fontsize=9))
     fig.legend(handles=[plt.Line2D([], [], color=c) for _, _, c in runs], labels=[l for l, _, _ in runs],
                loc="upper right", fontsize=12)
-    plt.show()
+    show("lens_corner")
     print(f"{CLUSTER} ΛCDM")
     for lab, v in zip(labs, xl.T):
         q = np.percentile(v, [16, 50, 84])
@@ -822,7 +839,7 @@ def mu_scan(res, model, batch=500):
     return np.concatenate([np.asarray(f(jnp.asarray(th[k:k + batch]))) for k in range(0, len(th), batch)])
 
 
-def sampler_diagnostics(title, res, model):
+def sampler_diagnostics(title, res, model, fname):
     names = list(res["names"]); nd = len(names)
     th3 = np.asarray(res["theta"]).reshape(-1, *np.shape(res["theta"])[-2:]) if np.ndim(res["theta"]) == 3 \
         else np.asarray(res["theta"])[None]
@@ -900,18 +917,18 @@ def sampler_diagnostics(title, res, model):
         ax.plot(th3[ci, :, ke], lw=0.5, label=f"chain {ci}")
     ax.set_xlabel("sample"); ax.set_ylabel(label(names[ke])); ax.legend(fontsize=7)
     fig.suptitle(f"{CLUSTER}: {title}")
-    plt.tight_layout(); plt.show()
+    plt.tight_layout(); show(fname)
     return dict(muinv=muinv, near=near, worst_image=IMG_IDS[jw])
 
 
 diag = {}
 if nuts_lcdm is not None:
-    diag["ΛCDM"] = sampler_diagnostics("ΛCDM NUTS", nuts_lcdm, lcdm_model(MAG_CAP))
+    diag["ΛCDM"] = sampler_diagnostics("ΛCDM NUTS", nuts_lcdm, lcdm_model(MAG_CAP), "diagnostics_lcdm")
 if nuts_w is not None:
     c = calib[MAG_CAP]
     mw = make_model(MAG_CAP, cosmology_free=True, lens=c["lens"], poi=c["poi"])
     mw.set_source_mode("marginalize")
-    diag["w0waCDM"] = sampler_diagnostics("w0waCDM NUTS", nuts_w, mw)
+    diag["w0waCDM"] = sampler_diagnostics("w0waCDM NUTS", nuts_w, mw, "diagnostics_w0wa")
 """)
 
 md(r"""

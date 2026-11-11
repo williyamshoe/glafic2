@@ -48,35 +48,65 @@ def available(data=DATA, excluded=True):
     return names if excluded else [n for n in names if n not in set(excluded_clusters(data))]
 
 
+NAME_COLS = ("glafic_name", "folder")       # summary-table column holding the folder name, if any
+
+
+def _name_col(rows):
+    return next((c for c in NAME_COLS if rows and c in rows[0]), None)
+
+
+def _summary_rows(data=DATA):
+    import csv
+    path = os.path.join(data, SUMMARY)
+    return list(csv.DictReader(open(path))) if os.path.exists(path) else []
+
+
+def _match_key(name, data=DATA):
+    """(z_l, number of systems, published chi^2) of a cluster folder: what identifies its summary row."""
+    f = find_files(name, data)
+    ref = read_readme(f["readme"])
+    nsys = len({ln.split()[0].split(".")[0] for ln in open(f["mulimage"])
+                if ln.split() and not ln.lstrip().startswith("#")})
+    return round(ref.get("zl", -1), 3), nsys, ref.get("chi2")
+
+
+def _row_key(r):
+    try:
+        return round(float(r["zl"]), 3), int(r["sources"]), float(r["chi2"])
+    except (KeyError, ValueError):
+        return None
+
+
+def summary_row(name, data=DATA):
+    """The summary-table row of one cluster folder, or None (looked up by
+    'glafic_name'; without that column, by matching that cluster's own files)."""
+    rows = _summary_rows(data)
+    col = _name_col(rows)
+    if col:
+        return next((r for r in rows if (r[col] or "").strip() == name), None)
+    key = _match_key(name, data)
+    return next((r for r in rows if _row_key(r) == key), None)
+
+
+def is_excluded(name, data=DATA):
+    """True if cluster ``name`` is marked in the summary table's 'exclude' column."""
+    r = summary_row(name, data)
+    return bool(r and (r.get("exclude") or "").strip())
+
+
 def summary_table(data=DATA):
     """{folder: row} from ``data``/venus_clusters_summary.csv ({} if there is none).
 
-    Rows are matched to folders by a 'folder' column if the table has one,
-    otherwise by lens redshift, number of systems and published chi^2 (the
-    readme's values)."""
-    import csv
-    path = os.path.join(data, SUMMARY)
-    if not os.path.exists(path):
-        return {}
-    rows = list(csv.DictReader(open(path)))
-    if rows and "folder" in rows[0]:
-        return {r["folder"].strip(): r for r in rows if r["folder"].strip()}
-    keys = {}
-    for n in available(data):
-        f = find_files(n, data)
-        ref = read_readme(f["readme"])
-        nsys = len({ln.split()[0].split(".")[0] for ln in open(f["mulimage"])
-                    if ln.split() and not ln.lstrip().startswith("#")})
-        keys[(round(ref.get("zl", -1), 3), nsys, ref.get("chi2"))] = n
-    out = {}
-    for r in rows:
-        try:
-            k = (round(float(r["zl"]), 3), int(r["sources"]), float(r["chi2"]))
-        except (KeyError, ValueError):
-            continue
-        if k in keys:
-            out[keys[k]] = r
-    return out
+    Rows are matched to folders by the 'glafic_name' column (the folder name)
+    if the table has one, otherwise by lens redshift, number of systems and published chi^2 (the
+    readme's values).  The latter reads every cluster's files, which is slow
+    on a network filesystem."""
+    rows = _summary_rows(data)
+    col = _name_col(rows)
+    if col:
+        return {r[col].strip(): r for r in rows if (r[col] or "").strip()}
+    keys = {_match_key(n, data): n for n in available(data)}
+    return {keys[_row_key(r)]: r for r in rows if _row_key(r) in keys}
 
 
 def excluded_clusters(data=DATA):
@@ -294,7 +324,7 @@ def write_all(name, outdir=HERE, prefix=None, zl=None, bcg=False, mpoles=(), she
              *([f"range lens {ib} 2 50.0 800.0", f"range lens {ib} 7 0.1 300.0"] if bcg else []),
              *sum(([f"range lens {nl + 1 + q} 5 0.0 0.5", f"range lens {nl + 1 + q} 6 -720.0 720.0"]
                    for q in range(len(mpoles))), []),
-             "range omega 0.05 1.0", "range weos -2.5 0.0", "range wa -10.0 10.0"]
+             "range omega 0.05 1.0", "range weos -3.0 1.0", "range wa -3.0 2.0"]   # w0, wa: DESI
     for k, s in enumerate(systems.values(), start=1):
         if s["zerr"] > 0:
             prior.append(f"range point {k} 1 {max(s['zs'] - 4 * s['zerr'], zl + 0.05):.3f} "

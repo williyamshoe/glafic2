@@ -16,6 +16,12 @@ Re-parameterisation
   e.g. ``{"wa": ("offset", "weos", -3.0, 0.0)}`` samples ``w0 + wa`` so the
   condition ``w0 + wa < 0`` is part of the parameter space instead of a hard
   wall in the posterior (walls cause NUTS divergences).
+* ``("sum_below", other, lo, hi, cap)``: a prior flat in (param, other) on
+  ``lo <= param <= hi`` and ``param + other < cap``.  Sampled as the fraction
+  u in [0, 1) of the allowed range, ``param = lo + u (min(hi, cap - other) - lo)``,
+  with the Jacobian added so the prior stays flat; no walls.  DESI's w0waCDM
+  prior (w0 in [-3, 1], wa in [-3, 2], w0 + wa < 0) is
+  ``{"wa": ("sum_below", "weos", -3.0, 2.0, 0.0)}`` with the w0 range [-3, 1].
 * ``("nfw_alpha", R, zs_ref)`` for the mass of an NFW-family halo
   (``nfw``, ``nfwpot``, ``anfw``, ``tnfw``...; glafic ``nfw_users 0``):
   sample log10 of the *spherical NFW deflection at radius R* [arcsec] for a
@@ -126,7 +132,8 @@ class Pipeline:
         ``{theta_name: (lo, hi)}`` overriding the glafic ranges (in parameter
         units, also for log10-sampled parameters).
     reparam : dict, optional
-        ``{theta_name: "log10" | ("offset", other_name, lo, hi)}``.
+        ``{theta_name: "log10" | ("offset", other_name, lo, hi) |
+        ("sum_below", other_name, lo, hi, cap) | ("nfw_alpha", R, zs_ref)}``.
     **lp_kw
         Forwarded to :meth:`Model.log_prob` (``point_mode``, ``ext_mode``,
         ``n_sub``).  Can be overridden per stage.
@@ -150,6 +157,7 @@ class Pipeline:
             raise ValueError(f"reparam refers to unknown parameters {sorted(unknown)}")
         self.kind, self.ref, self.site, cons = [], [], [], []
         self._nfw = {}
+        self._capped = {}
         for k, n in enumerate(self.names):
             spec = self.reparam.get(n, "linear")
             lo, hi = self.bounds.get(n, _range_of(m, k))
@@ -169,6 +177,19 @@ class Pipeline:
                 self.kind.append("offset")
                 self.ref.append(r)
                 self.site.append(f"{k:03d}_{n}_plus_{other}")
+            elif isinstance(spec, tuple) and spec[0] == "sum_below":
+                _, other, plo, phi, cap = spec
+                r = self.names.index(other)
+                if self.reparam.get(other, "linear") != "linear":
+                    raise ValueError("sum_below reference must be a linearly sampled parameter")
+                rlo, rhi = self.bounds.get(other, _range_of(m, r))
+                if not _finite(rhi, +1) or min(phi, cap - rhi) <= plo:
+                    raise ValueError(f"sum_below for {n}: empty range when {other} = {rhi}")
+                self._capped[k] = (float(plo), float(phi), float(cap))
+                self.kind.append("sum_below")
+                self.ref.append(r)
+                self.site.append(f"{k:03d}_{n}_frac")
+                lo, hi = 0.0, 1.0
             elif isinstance(spec, tuple) and spec[0] == "nfw_alpha":
                 _, R, zref = spec
                 i, rest = n[4:].split("_", 1)
@@ -207,6 +228,8 @@ class Pipeline:
                 out.append(10.0 ** v[k])
             elif kind == "offset":
                 out.append(v[k] - v[self.ref[k]])
+            elif kind == "sum_below":
+                out.append(self._capped[k][0] + v[k] * self._capped_width(k, v[self.ref[k]]))
             elif kind == "nfw_alpha":
                 out.append(jnp.asarray(1.0e14, dtype=v.dtype))       # placeholder, solved below
             else:
@@ -224,6 +247,8 @@ class Pipeline:
                 out.append(jnp.log10(theta[k]))
             elif kind == "offset":
                 out.append(theta[k] + theta[self.ref[k]])
+            elif kind == "sum_below":
+                out.append((theta[k] - self._capped[k][0]) / self._capped_width(k, theta[self.ref[k]]))
             elif kind == "nfw_alpha":
                 out.append(self._nfw_log10alpha(theta, jnp.log10(theta[k]), k))
             else:
@@ -263,13 +288,21 @@ class Pipeline:
         u = jax.lax.stop_gradient(u)
         return u - (f(u, theta) - log10a) / jax.lax.stop_gradient(df(u, th0))
 
+    def _capped_width(self, k, ref_value):
+        """Width of the allowed range of a sum_below parameter, given its reference parameter."""
+        plo, phi, cap = self._capped[k]
+        return jnp.minimum(phi, cap - ref_value) - plo
+
     def log_prior_reparam(self, v):
         """Extra log-density on the sampled sites so that priors stay flat in
-        the original parameters where requested (nfw_alpha: flat in log10 M)."""
-        if not self._nfw:
-            return 0.0
-        theta = self.v_to_theta(v)
+        the original parameters where requested (nfw_alpha: flat in log10 M;
+        sum_below: flat in the parameter, via d param / d u = allowed width)."""
         tot = 0.0
+        for k in self._capped:
+            tot = tot + jnp.log(self._capped_width(k, v[self.ref[k]]))
+        if not self._nfw:
+            return tot
+        theta = self.v_to_theta(v)
         for k in self._nfw:
             u = jnp.log10(theta[k])
             dadu = jax.grad(lambda uu: self._nfw_log10alpha(theta, uu, k))(u)

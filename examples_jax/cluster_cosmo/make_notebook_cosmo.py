@@ -64,8 +64,9 @@ fit.
 Clusters marked in the `exclude` column of
 `example_data/venus_clusters_summary.csv` are judged too complex or not
 worth modelling. The notebook refuses to run one unless `RUN_EXCLUDED = True`.
-Rows are matched to folders by lens redshift, number of systems and published
-χ², or by a `folder` column if you add one.
+`python build_cluster.py` lists which clusters are excluded.
+Rows are matched to folders by the table's `glafic_name` column (the folder
+name); a new cluster needs a row there to be excluded.
 
 To add a cluster, drop a new folder in `example_data/`. `build_cluster.py`
 lists what it finds (`python build_cluster.py`).
@@ -126,11 +127,14 @@ sharply peaked, so NUTS needs long warmup and a high target acceptance. Do
 
 ### Stages
 
-Each stage caches its result in `results/<cluster>/<model tag>/`, and
-re-running skips finished stages. Every cluster gets its own folder, and
-changing the multipoles, the BCG or the halo-mass parameterization changes the
-model tag, so stale chains are never reused. Each cached file also records its
-cluster and model tag, and loading one into a different run raises an error.
+Everything for a cluster goes in one folder, `results/<cluster>/`: the glafic
+input files, the cached result of each stage (re-running skips finished
+stages) and every figure as a PNG. The folder holds one model setup at a time.
+`setup.json` records its model tag, which changes with the multipoles, the
+BCG, the shear, the parities, `SPEC_ONLY` and the halo-mass parameterization.
+Running a different setup into the same folder stops with an error instead
+of reusing stale results; move or rename the folder to keep both. Each cached
+file also records its cluster and model tag.
 
 | stage | what |
 |---|---|
@@ -160,14 +164,11 @@ import jax, jax.numpy as jnp
 import build_cluster as build
 
 print("jax", jax.__version__, "| backend:", jax.default_backend(), "| devices:", jax.devices())
-EXCLUDED = build.excluded_clusters()      # marked in example_data/venus_clusters_summary.csv
-print("clusters to model:", build.available(excluded=False))
-print("excluded:", EXCLUDED)
 
 # ---------------- configuration ----------------
 CLUSTER = os.environ.get("GLAFIC_CLUSTER", "rj2129")   # folder name in example_data/
 RUN_EXCLUDED = False              # allow a cluster marked in the summary table's 'exclude' column
-if CLUSTER in EXCLUDED and not RUN_EXCLUDED:
+if build.is_excluded(CLUSTER) and not RUN_EXCLUDED:   # marked in example_data/venus_clusters_summary.csv
     raise ValueError(f"{CLUSTER} is excluded in venus_clusters_summary.csv; set RUN_EXCLUDED = True to run it")
 CLUSTER_MODEL = {                 # per-cluster additions to the base recipe
     "rj2129": dict(mpoles=[(3, 2)]),       # m = 3 needed to form images 3.2/3.3
@@ -188,7 +189,8 @@ N_STARTS = 16                     # jittered L-BFGS starts for the MAP
 USE_NFW_ALPHA = True              # halo mass: sample log10 of the NFW deflection at R (straightens M-c)
 NFW_ALPHA_R = None                # [arcsec]; None = median image distance from the BCG
 NFW_ALPHA_ZS = None               # source z for the deflection; None = median z_s
-COSMO_REPARAM = {"wa": ("offset", "weos", -3.0, 0.0)}   # sample w0 + wa in [-3, 0)
+COSMO_REPARAM = {"wa": ("sum_below", "weos", -3.0, 2.0, 0.0)}   # DESI: wa in [-3, 2], w0 + wa < 0
+W_PRIOR = "desi"                  # tag of the w0/wa prior in the chain file names (w0 in [-3, 1]: prior file)
 NUTS_KW = dict(num_chains=4, num_warmup=1000, num_samples=1000, target_accept=0.95,
                max_tree_depth=10, init="map", init_jitter=0.01, use_approx_mass=False, chunk=250)
 MODELS = ["lcdm", "wcdm", "w0wa"]   # cosmologies to sample in stage B (finished ones are loaded from disk)
@@ -231,10 +233,25 @@ REPARAM = {"lens1_anfw_p2": ("nfw_alpha", NFW_ALPHA_R, NFW_ALPHA_ZS) if USE_NFW_
 TAG = "_".join(["base"] + (["speconly"] if SPEC_ONLY else []) + ([] if SHEAR else ["noshear"]) + [f"mpole{m}{n}" for m, n in MPOLES]
                + (["bcg"] if BCG else [])
                + (["autopar"] if PARITY == "auto" else ["mupar" + "-".join(sorted(PARITY))] if PARITY else [])
+               + ([f"cap{MAG_CAP:g}"] if MAG_CAP else [])
                + [f"nfwa{NFW_ALPHA_R:g}z{NFW_ALPHA_ZS:g}" if USE_NFW_ALPHA else "log10M"])
-RUN_DIR = os.path.join(RESULTS, TAG)
+RUN_DIR = RESULTS                 # every file of this cluster: results/<cluster>/
 os.makedirs(RUN_DIR, exist_ok=True)
+_setup = os.path.join(RUN_DIR, "setup.json")
+if os.path.exists(_setup):        # one model setup per folder: never mix results of different setups
+    _old = json.load(open(_setup)).get("tag")
+    if _old != TAG:
+        raise ValueError(f"{RUN_DIR} holds results of model {_old!r}, not {TAG!r}; move or rename it "
+                         f"(e.g. to {RESULTS}_{_old}) before running this setup")
+else:
+    json.dump(dict(cluster=CLUSTER, tag=TAG), open(_setup, "w"))
 print(f"model: {TAG}  ->  {RUN_DIR}")
+
+
+def show(name):
+    # save the current figure as results/<cluster>/<name>.png, then display it
+    plt.savefig(os.path.join(RUN_DIR, f"{name}.png"), dpi=150, bbox_inches="tight")
+    plt.show()
 
 
 def write_files(outdir, pos_err):
@@ -257,14 +274,12 @@ for k, (sid, s) in enumerate(systems.items()):
 ax.set_xlim(LIM, -LIM); ax.set_ylim(-LIM, LIM); ax.set_aspect("equal")
 ax.set_xlabel("x [arcsec] (west →)"); ax.set_ylabel("y [arcsec]"); ax.legend(fontsize=7, ncol=2)
 ax.set_title(CLUSTER)
-plt.show()
+show("images")
 """)
 
 code(r"""
 def capdir(cap):
-    d = os.path.join(RUN_DIR, f"cap{cap:g}")
-    os.makedirs(d, exist_ok=True)
-    return d
+    return RUN_DIR                # one folder per cluster (a non-zero MAG_CAP is part of the model tag)
 
 
 # free cosmological parameters of each model (glafic flags), and its label
@@ -451,6 +466,7 @@ t0 = time.time()
 calib = {MAG_CAP: stage_a(MAG_CAP)}        # cached after the first run; every later stage needs it
 print(f"stage A: {time.time() - t0:.0f} s")
 PARITY_FIX = {k: int(v) for k, v in calib[MAG_CAP]["parity"].items()}   # in force from here on
+write_files(capdir(MAG_CAP), calib[MAG_CAP]["sigma"])   # current priors/settings, also for a cached stage A
 print(f"parity constraints{' (automatic)' if PARITY == 'auto' else ''}: "
       + (", ".join(f"{k}: {v:+d}" for k, v in PARITY_FIX.items()) or "none"))
 for cap, c in calib.items():
@@ -502,7 +518,7 @@ for i in range(m.num_poi):
     ax.scatter(pred[:, 0], pred[:, 1], marker="x", color=cmap(i % 20), s=30)
 ax.set_xlim(LIM, -LIM); ax.set_ylim(-LIM, LIM); ax.set_aspect("equal"); ax.legend(fontsize=8)
 ax.set_title(f"{CLUSTER}: best fit (Ω_m = 0.3, w = −1)")
-plt.show()
+show("best_fit")
 rms = np.sqrt(np.mean(np.square(offs)))
 print(f"image-plane rms = {rms:.3f} arcsec (expect ~{c['sigma']:.2f}); median |μ| = {np.median(mus):.1f}; "
       f"systems with missing images: {missing or 'none'}")
@@ -519,10 +535,12 @@ photometric redshifts (if any) and that model's cosmological parameters, with
 the source positions marginalised. The priors are flat:
 
 * Ω_m ∈ [0.05, 1] (all models);
-* w ∈ [−2.5, 0] (wCDM), w0 ∈ [−2.5, 0] (w0waCDM);
-* **w0 + wa ∈ [−3, 0)** (w0waCDM), sampled directly, which builds the
-  condition w0 + wa < 0 (no dark-energy domination at early times) into the
-  parameter space instead of a hard wall in the posterior.
+* w ∈ [−3, 1] (wCDM); w0 ∈ [−3, 1] and wa ∈ [−3, 2] with **w0 + wa < 0**
+  (w0waCDM). These are DESI's ranges. The condition w0 + wa < 0 (no
+  dark-energy domination at early times) cuts the (w0, wa) box diagonally;
+  wa is sampled as the fraction of its allowed range at the current w0
+  (`sum_below`), with the Jacobian included, so the prior is exactly flat in
+  (w0, wa) without a wall in the posterior.
 
 Each orientation angle is restricted to one period around the best fit
 (`gj.angle_bounds`). Chains start near the stage-A best fit, at Ω_m = 0.3,
@@ -534,7 +552,7 @@ more. If the median number of gradient evaluations per sample is
 """)
 
 code(r"""
-NUTS_FILE = {"lcdm": "nuts_lcdm_om.npz", "wcdm": "nuts_wcdm.npz", "w0wa": "nuts_w0wa.npz"}
+NUTS_FILE = {"lcdm": "nuts_lcdm_om.npz", "wcdm": f"nuts_wcdm_{W_PRIOR}.npz", "w0wa": f"nuts_w0wa_{W_PRIOR}.npz"}
 REPARAM_OF = {"lcdm": REPARAM, "wcdm": REPARAM, "w0wa": dict(REPARAM, **COSMO_REPARAM)}
 
 
@@ -596,9 +614,11 @@ md(r"""
 
 One corner plot for all models. Columns are Ω_m, w0 (w for wCDM) and wa; a
 model is drawn only in the panels of its own free parameters, so ΛCDM appears
-only in the Ω_m histogram and wCDM is absent from every wa panel. The grey
-dashed curves are the priors: where a posterior follows its prior, the data
-do not constrain that parameter. Shading marks the 68% (darker) and 95%
+only in the Ω_m histogram and wCDM is absent from every wa panel. Dashed
+curves are the priors (grey when all models share it; in the model's colour
+when they differ, as for w0, whose prior in w0waCDM is not flat because of
+the w0 + wa < 0 cut). Where a posterior follows its prior, the data do not
+constrain that parameter. Shading marks the 68% (darker) and 95%
 (lighter) regions. Dotted lines mark (Ω_m, w0, wa) = (0.3, −1, 0).
 """)
 
@@ -607,8 +627,8 @@ import corner
 import matplotlib.colors
 
 COS = [("omega", r"$\Omega_m$", "Ω_m", (0.05, 1.0)),
-       ("weos", r"$w_0$ ($w$ in wCDM)", "w0 (w)", (-2.5, 0.0)),
-       ("wa", r"$w_a$", "wa", (-3.0, 3.0))]
+       ("weos", r"$w_0$ ($w$ in wCDM)", "w0 (w)", (-3.0, 1.0)),
+       ("wa", r"$w_a$", "wa", (-3.0, 2.0))]
 REF = {"omega": 0.3, "weos": -1.0, "wa": 0.0}
 COLORS = {"lcdm": "tab:red", "wcdm": "tab:green", "w0wa": "tab:blue"}
 
@@ -619,17 +639,26 @@ def cosmo_columns(res):
 
 
 def prior_draws(n=400_000, seed=0):
-    # draws from the flat priors actually used: ranges from the prior file, w0 + wa from COSMO_REPARAM
+    # {model: {parameter: draws}} from the flat priors actually used: ranges from the prior file and
+    # the wa treatment from COSMO_REPARAM.  With the w0 + wa cut, w0's prior in w0waCDM is not flat.
     rng = np.random.default_rng(seed)
     box = {}
     for ln in open(os.path.join(capdir(MAG_CAP), f"{CLUSTER}_prior.dat")):
         t = ln.split()
         if len(t) == 4 and t[0] == "range" and t[1] in ("omega", "weos", "wa"):
             box[t[1]] = (float(t[2]), float(t[3]))
-    out = {"omega": rng.uniform(*box["omega"], n), "weos": rng.uniform(*box["weos"], n)}
+    om = rng.uniform(*box["omega"], n)
+    out = {"lcdm": {"omega": om}, "wcdm": {"omega": om, "weos": rng.uniform(*box["weos"], n)}}
     spec = COSMO_REPARAM.get("wa")
-    out["wa"] = (rng.uniform(spec[2], spec[3], n) - out["weos"]) if spec and spec[0] == "offset" \
-        else rng.uniform(*box["wa"], n)
+    w0 = rng.uniform(*box["weos"], 4 * n)
+    keep = np.ones(4 * n, bool)
+    if spec and spec[0] == "sum_below":          # flat in (w0, wa) on the box, cut at w0 + wa < cap
+        wa = rng.uniform(spec[2], spec[3], 4 * n); keep = w0 + wa < spec[4]
+    elif spec and spec[0] == "offset":           # flat in (w0, w0 + wa)
+        wa = rng.uniform(spec[2], spec[3], 4 * n) - w0
+    else:
+        wa = rng.uniform(*box["wa"], 4 * n)
+    out["w0wa"] = {"omega": om, "weos": w0[keep][:n], "wa": wa[keep][:n]}
     return out
 
 
@@ -655,8 +684,14 @@ if nuts:
             if j > i:
                 ax.axis("off")
                 continue
-            if i == j:
-                ax.hist(prior[ni], bins=40, range=ri, density=True, histtype="step", color="0.5", ls="--")
+            if i == j:                     # priors: grey if all models share it, else one per model
+                pri = {k: prior[k][ni] for k in cols if ni in prior[k]}
+                shared = len({id(v) for v in pri.values()}) == 1
+                for k, v in pri.items():
+                    ax.hist(v, bins=40, range=ri, density=True, histtype="step", ls="--", lw=1,
+                            color="0.5" if shared else COLORS[k])
+                    if shared:
+                        break
             for k, cc in cols.items():
                 if i == j and ni in cc:
                     ax.hist(cc[ni], bins=40, range=ri, density=True, histtype="stepfilled", color=COLORS[k],
@@ -683,15 +718,16 @@ if nuts:
             elif i != j:
                 ax.set_yticklabels([])
     handles = [plt.Line2D([], [], color=COLORS[k], lw=1.5) for k in cols] + [plt.Line2D([], [], color="0.5", ls="--")]
-    fig.legend(handles, [COSMO_MODELS[k][1] for k in cols] + ["prior"], loc="upper right",
+    fig.legend(handles, [COSMO_MODELS[k][1] for k in cols] + ["prior (dashed)"], loc="upper right",
                bbox_to_anchor=(0.95, 0.95), fontsize=12, title=CLUSTER)
-    plt.tight_layout(); plt.show()
+    plt.tight_layout(); show("cosmology_corner")
 
     print(f"median [68%]   {'':12s}" + "".join(f"{lab:>24s}" for _, _, lab, _ in COS))
     for k, cc in cols.items():
         print(f"{COSMO_MODELS[k][1]:12s} posterior " + "".join(
             f"{interval(cc[n]) if n in cc else '':>24s}" for n, *_ in COS))
-    print(f"{'':12s} prior     " + "".join(f"{interval(prior[n]):>24s}" for n, *_ in COS))
+        print(f"{'':12s} prior     " + "".join(
+            f"{interval(prior[k][n]) if n in cc else '':>24s}" for n, *_ in COS))
     print("\nIntervals close to the prior's are prior-dominated, not constraints.")
 """)
 
@@ -746,8 +782,9 @@ md(r"""
 ## Notes
 
 * **Running several clusters.** One kernel per cluster: set `GLAFIC_CLUSTER`
-  in each batch job. Results go to separate folders, and the w0waCDM chain is
-  shared with `cluster_cosmo_hmc.ipynb` when the model setup is the same.
+  in each batch job. Results go to separate folders, and the w0waCDM chain
+  (`nuts_w0wa_desi.npz`) is shared with `cluster_cosmo_hmc.ipynb` when the
+  model setup is the same.
 * **Interpreting the cosmology.** A single cluster constrains ratios of
   distances between source planes, which depend weakly on (Ω_m, w0, wa) and
   are degenerate with the mass model. Compare each posterior with its prior
