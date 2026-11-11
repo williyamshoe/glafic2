@@ -226,7 +226,7 @@ def summary(c):
 
 
 def write_all(name, outdir=HERE, prefix=None, zl=None, bcg=False, mpoles=(), shear=True, eta_free=True,
-              pos_err=None, parity=None, fov=None, spec_only=False, data=DATA):
+              pos_err=None, parity=None, fov=None, spec_only=False, halo="anfw", data=DATA):
     """Write the glafic files for cluster ``name``.  Defaults follow the glafic
     recipe of Oguri et al. (VENUS, 2026, Sec. 2.3): elliptical NFW halo (all 6
     parameters free, 1 < c < 40, e < 0.8), pseudo-Jaffe members with
@@ -242,15 +242,20 @@ def write_all(name, outdir=HERE, prefix=None, zl=None, bcg=False, mpoles=(), she
     mpoles : sequence of (m, n) multipole perturbations ('mpole') centred on
              the BCG, with amplitude and angle free.
     shear  : include the external shear ('pert', amplitude and angle free).
-             Lenses are numbered anfw, gals, [pert], [jaffe], [mpole...].
+             Lenses are numbered halo, gals, [pert], [jaffe], [mpole...].
     parity : {image ID: +1 or -1} required parity (sign of 1/mu) of selected
              images, e.g. both members of a merging pair, which must straddle
              a critical curve.  glafic gives a wrong parity a chi^2 of
              chi2pen_parity (a hard wall); other images stay unconstrained.
     spec_only: leave out systems with photometric redshifts (see :func:`load`).
+    halo   : 'anfw' (elliptical NFW, the recipe) or 'gnfw' (generalized NFW,
+             density ~ r^-gamma inside the scale radius, with the inner slope
+             gamma free in [0.05, 1.95]; gamma = 1 is NFW).
     fov    : half-width of the glafic grid [arcsec]; default max(60, 2 x the
              largest image distance from the BCG), rounded up to 10".
     """
+    if halo not in ("anfw", "gnfw"):
+        raise ValueError(f"halo must be 'anfw' or 'gnfw', not {halo!r}")
     c = load(name, zl=zl, data=data, spec_only=spec_only)
     parity = {str(k): int(v) for k, v in (parity or {}).items()}
     known = {iid for s in c["systems"].values() for iid in s["ids"]}
@@ -286,7 +291,7 @@ def write_all(name, outdir=HERE, prefix=None, zl=None, bcg=False, mpoles=(), she
              "chi2_splane    1", "chi2_checknimg 0",
              "flatfix   1", "ovary     1", "wvary     1", "wavary    1", "hvary     0",
              "", f"startup {2 + int(shear) + int(bcg) + len(mpoles)} 0 {len(systems)}",
-             f"lens anfw  {zl} 8.0e14  0.0  0.0  0.4  -20.0  6.0  0.0",
+             f"lens {halo:5s}{zl} 8.0e14  0.0  0.0  0.4  -20.0  6.0  {1.0 if halo == 'gnfw' else 0.0}",
              f"lens gals  {zl} 200.0   0.0  0.0  0.0    0.0 20.0  1.0"]
     if shear:
         lines.append(f"lens pert  {zl} 2.0     0.0  0.0  0.05  30.0  0.0  0.0")
@@ -298,7 +303,7 @@ def write_all(name, outdir=HERE, prefix=None, zl=None, bcg=False, mpoles=(), she
         cxy = np.mean(s["xy"], axis=0)
         lines.append(f"point {s['zs']:.4f} {cxy[0]:.4f} {cxy[1]:.4f}")
     lines += ["end_startup", "", "start_setopt",
-              "0 1 1 1 1 1 1 0",      # anfw: M, x, y, e, PA, c
+              "0 1 1 1 1 1 1 %d" % int(halo == "gnfw"),   # halo: M, x, y, e, PA, c [, inner slope]
               "0 1 0 0 0 0 1 %d" % int(eta_free)]   # gals: sigma*, r_trunc*, eta
     if shear:
         lines.append("0 0 0 0 1 1 0 0")       # pert: gamma, theta
@@ -319,6 +324,7 @@ def write_all(name, outdir=HERE, prefix=None, zl=None, bcg=False, mpoles=(), she
     prior = ["# parameter ranges (flat priors inside); Oguri et al. VENUS recipe",
              "range lens 1 2 1.0e13 1.0e16", "range lens 1 3 -15.0 15.0", "range lens 1 4 -15.0 15.0",
              "range lens 1 5 0.0 0.8", "range lens 1 6 -720.0 720.0", "range lens 1 7 1.0 40.0",
+             *(["range lens 1 8 0.05 1.95"] if halo == "gnfw" else []),
              "range lens 2 2 100.0 400.0", "range lens 2 7 1.0 100.0", "range lens 2 8 0.2 1.5",
              *(["range lens 3 5 0.0 0.5", "range lens 3 6 -720.0 720.0"] if shear else []),
              *([f"range lens {ib} 2 50.0 800.0", f"range lens {ib} 7 0.1 300.0"] if bcg else []),

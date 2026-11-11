@@ -91,17 +91,23 @@ system has fewer predicted than observed images, if an observed image lies more
 than `IMG_OFFSET_MAX` σ from every predicted image, or if an observed image has
 |μ| > `MU_CRIT` at the best fit (the source-plane χ² rewards putting an image on
 a critical curve, where any offset maps to a tiny source-plane residual). If
-the base model fails, each component in `MODEL_CANDIDATES` (m = 3 and m = 4
-multipoles centred on the BCG, a separate BCG, external shear) is added in turn
-and refitted. Among the candidates that pass, the one with the lowest BIC is
+the base model fails, each multipole in `MODEL_CANDIDATES` (m = 3 and m = 4,
+centred on the BCG) is added in turn and refitted. Among the candidates that pass, the one with the lowest BIC is
 kept; if none passes, a second component is added to the closest one (at most
 `MAX_ADDITIONS`). A cluster that still fails stops with an error and needs a
 model by hand. With `BIC_SELECT = True`, a component is also added to a
 passing model when it lowers the BIC by more than `BIC_MIN_DROP`. The χ² alone
 is not enough: for RXJ2129 the base model's χ² is only 2.7 worse than with an
 m = 3 multipole, but it puts image 6.2 on a critical curve and loses two images
-of system 6. Setting `mpoles`, `bcg` or `shear` for a cluster in
+of system 6. Setting `mpoles`, `bcg`, `shear` or `halo` for a cluster in
 `CLUSTER_MODEL` fixes its model by hand and skips the search.
+
+Only multipoles are candidates. A separate BCG (`bcg=True`), external shear
+(`shear=True`) and a generalized NFW halo with a free inner slope
+(`halo="gnfw"`) can be set by hand, but they change more than the angular
+structure. In tests on RXJ2129, a free BCG was fitted with almost no mass,
+and the gNFW's inner slope ran to its lower limit (a flat core). Both lower
+the χ² a lot, but they move mass between the halo, the BCG and the members.
 
 **Image parities** (the sign of 1/μ). The source-plane χ² does not check
 which side of a critical curve an image lies on. For an image pair merging
@@ -187,12 +193,12 @@ CLUSTER = os.environ.get("GLAFIC_CLUSTER", "rj2129")   # folder name in example_
 RUN_EXCLUDED = False              # allow a cluster marked in the summary table's 'exclude' column
 if build.is_excluded(CLUSTER) and not RUN_EXCLUDED:   # marked in example_data/venus_clusters_summary.csv
     raise ValueError(f"{CLUSTER} is excluded in venus_clusters_summary.csv; set RUN_EXCLUDED = True to run it")
-CLUSTER_MODEL = {                 # optional per-cluster settings; "mpoles", "bcg" or "shear" fix the model by hand
-    # "<name>": dict(mpoles=[(3, 2)], bcg=True, shear=True, parity={"3.3": -1, "3.4": +1}),
+CLUSTER_MODEL = {                 # optional per-cluster settings; "mpoles", "bcg", "shear" or "halo" fix the model by hand
+    # "<name>": dict(mpoles=[(3, 2)], bcg=True, shear=True, halo="gnfw", parity={"3.3": -1, "3.4": +1}),
 }
-MANUAL_MODEL = {k: v for k, v in CLUSTER_MODEL.get(CLUSTER, {}).items() if k in ("mpoles", "bcg", "shear")}
+MANUAL_MODEL = {k: v for k, v in CLUSTER_MODEL.get(CLUSTER, {}).items() if k in ("mpoles", "bcg", "shear", "halo")}
 AUTO_MODEL = True                 # without a manual model: add components when the base model fails the image check
-MODEL_CANDIDATES = [dict(mpoles=[(3, 2)]), dict(mpoles=[(4, 2)]), dict(bcg=True), dict(shear=True)]
+MODEL_CANDIDATES = [dict(mpoles=[(3, 2)]), dict(mpoles=[(4, 2)])]   # multipoles only (see the introduction)
 MAX_ADDITIONS = 2                 # at most this many components are added to the base model
 BIC_SELECT = False                # also add a component to a passing model if it lowers the BIC by > BIC_MIN_DROP
 BIC_MIN_DROP = 10.0
@@ -247,8 +253,11 @@ if NFW_ALPHA_R is None:
     NFW_ALPHA_R = float(np.round(2 * np.median(r_img)) / 2)
 if NFW_ALPHA_ZS is None:
     NFW_ALPHA_ZS = float(np.round(np.median(zs_all), 2))
-REPARAM = {"lens1_anfw_p2": ("nfw_alpha", NFW_ALPHA_R, NFW_ALPHA_ZS) if USE_NFW_ALPHA else "log10",
-           "lens2_gals_p7": "log10"}          # member truncation radius: flat in log10
+def halo_reparam(cfg):
+    # sampled parameterization: halo mass as log10 of the NFW deflection at NFW_ALPHA_R (or log10 M),
+    # member truncation radius flat in log10
+    return {f"lens1_{cfg.get('halo', 'anfw')}_p2": ("nfw_alpha", NFW_ALPHA_R, NFW_ALPHA_ZS) if USE_NFW_ALPHA
+            else "log10", "lens2_gals_p7": "log10"}
 
 # results: one folder per cluster, holding one model setup at a time
 _PARITY_TAG = ["autopar"] if PARITY == "auto" else ["mupar" + "-".join(sorted(PARITY))] if PARITY else []
@@ -261,6 +270,7 @@ def model_tag(cfg):
     # name of a model setup: the mass model cfg (mpoles, bcg, shear) plus the settings above
     return "_".join(["base"] + (["speconly"] if SPEC_ONLY else []) + ([] if cfg["shear"] else ["noshear"])
                     + [f"mpole{m}{n}" for m, n in cfg["mpoles"]] + (["bcg"] if cfg["bcg"] else [])
+                    + ([cfg["halo"]] if cfg.get("halo", "anfw") != "anfw" else [])
                     + _PARITY_TAG + ([f"cap{MAG_CAP:g}"] if MAG_CAP else []) + _NFW_TAG)
 
 
@@ -284,7 +294,7 @@ def write_files(outdir, pos_err, cfg=None):
     # file (see add_parity_penalty)
     cfg = cfg or MODEL_CFG
     return build.write_all(CLUSTER, outdir, mpoles=cfg["mpoles"], bcg=cfg["bcg"], shear=cfg["shear"],
-                           pos_err=pos_err, spec_only=SPEC_ONLY)
+                           halo=cfg.get("halo", "anfw"), pos_err=pos_err, spec_only=SPEC_ONLY)
 
 
 gals = cl["gals"]
@@ -436,8 +446,9 @@ def load_npz(path):
 
 
 # readable parameter names
-PLAB = {("anfw", 2): "M_vir [M_sun/h]", ("anfw", 3): "x_halo", ("anfw", 4): "y_halo",
-        ("anfw", 5): "e_halo", ("anfw", 6): "θ_halo", ("anfw", 7): "c_halo",
+PLAB = {**{(h, p): lab for h in ("anfw", "gnfw") for p, lab in
+           ((2, "M_vir [M_sun/h]"), (3, "x_halo"), (4, "y_halo"), (5, "e_halo"), (6, "θ_halo"), (7, "c_halo"))},
+        ("gnfw", 8): "γ_inner (halo)",
         ("gals", 2): "σ* [km/s]", ("gals", 7): "r_trun* [arcsec]", ("gals", 8): "η",
         ("pert", 5): "γ_ext", ("pert", 6): "θ_γ", ("jaffe", 2): "σ_BCG [km/s]", ("jaffe", 7): "r_trun,BCG"}
 COSMO_LAB = {"omega": "Ω_m", "weos": "w0", "wa": "wa", "hubble": "h", "lambda": "Ω_Λ"}
@@ -449,7 +460,7 @@ def label(n):
     if m:
         i, mod, p = int(m.group(1)), m.group(2), int(m.group(3))
         if mod == "mpole" and p in (5, 6):
-            mm = MPOLES[i - (2 + int(SHEAR) + int(BCG)) - 1][0]     # lenses: anfw, gals, [pert], [jaffe], mpoles
+            mm = MPOLES[i - (2 + int(SHEAR) + int(BCG)) - 1][0]     # lenses: halo, gals, [pert], [jaffe], mpoles
             return f"ε_{mm}" if p == 5 else f"θ_{mm}"
         return PLAB.get((mod, p), n)
     m = re.fullmatch(r"point(\d+)_zs", n)
@@ -495,7 +506,7 @@ def fit_setup(d, cfg, tag, n_starts=N_STARTS):
     if dof <= 0:
         raise ValueError(f"{CLUSTER}: {dof} degrees of freedom ({sum(len(s['xy']) for s in systems.values())} "
                          f"images in {len(systems)} systems): too few constraints for this model")
-    pipe = gj.Pipeline(m, reparam=REPARAM)
+    pipe = gj.Pipeline(m, reparam=halo_reparam(cfg))
     for k, (ns, jit) in enumerate([(n_starts, 0.5), (4 * n_starts, 1.0), (8 * n_starts, 1.5)]):
         try:
             r = pipe.map(n_starts=ns, jitter=jit, seed=k, verbose=False)
@@ -521,7 +532,7 @@ def fit_setup(d, cfg, tag, n_starts=N_STARTS):
 def merged(cfg, add):
     # mass model cfg with the components of add
     out = dict(mpoles=[tuple(p) for p in cfg.get("mpoles", [])], bcg=bool(cfg.get("bcg", False)),
-               shear=bool(cfg.get("shear", False)))
+               shear=bool(cfg.get("shear", False)), halo=add.get("halo", cfg.get("halo", "anfw")))
     out["mpoles"] += [tuple(p) for p in add.get("mpoles", []) if tuple(p) not in out["mpoles"]]
     out["bcg"] |= bool(add.get("bcg", False)); out["shear"] |= bool(add.get("shear", False))
     return out
@@ -547,7 +558,7 @@ def bic(e):
     return c["chi2_raw"] * (POS_ERR0 / SIGMA_REF) ** 2 + c["npar"] * np.log(c["nobs"])
 
 
-BASE_MODEL = dict(mpoles=[], bcg=False, shear=False)
+BASE_MODEL = dict(mpoles=[], bcg=False, shear=False, halo="anfw")
 _search_key = dict(settings=SETTINGS_TAG, candidates=[merged(BASE_MODEL, a) for a in MODEL_CANDIDATES],
                    max_additions=MAX_ADDITIONS, bic_select=BIC_SELECT, bic_min_drop=BIC_MIN_DROP,
                    img_offset_max=IMG_OFFSET_MAX, mu_crit=MU_CRIT)
@@ -590,7 +601,8 @@ else:
         shutil.copy(os.path.join(cur["dir"], "calib.json"), os.path.join(RUN_DIR, "calib.json"))
     print(f"selected: {cur['tag']}  (model selection {time.time() - t0:.0f} s)")
 
-MPOLES, BCG, SHEAR = MODEL_CFG["mpoles"], MODEL_CFG["bcg"], MODEL_CFG["shear"]
+MPOLES, BCG, SHEAR, HALO = MODEL_CFG["mpoles"], MODEL_CFG["bcg"], MODEL_CFG["shear"], MODEL_CFG["halo"]
+REPARAM = halo_reparam(MODEL_CFG)
 TAG = model_tag(MODEL_CFG)
 if _old_setup.get("tag", TAG) != TAG:      # one model setup per folder: never mix results of different setups
     raise ValueError(f"{RUN_DIR} holds results of model {_old_setup['tag']!r}, not {TAG!r}; move or rename it "
