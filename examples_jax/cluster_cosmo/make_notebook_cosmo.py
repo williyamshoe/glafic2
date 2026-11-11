@@ -80,10 +80,28 @@ lists what it finds (`python build_cluster.py`).
 * optional multipoles centred on the BCG (`mpoles`) and an optional separate
   BCG (`bcg`).
 
-Every cluster runs with no per-cluster settings; additions go in
-`CLUSTER_MODEL`. The shear is off by default because it is often consistent
-with zero. Its angle is then unconstrained, and the amplitude–angle pair
-forms a funnel at γ = 0 that NUTS samples poorly.
+Every cluster runs with no per-cluster settings. The shear is off by
+default because it is often consistent with zero. Its angle is then
+unconstrained, and the amplitude–angle pair forms a funnel at γ = 0 that
+NUTS samples poorly.
+
+**Automatic model selection** (`AUTO_MODEL`, stage A). The base model is fitted
+first and checked with glafic's exact image finder. It fails the check if a
+system has fewer predicted than observed images, if an observed image lies more
+than `IMG_OFFSET_MAX` σ from every predicted image, or if an observed image has
+|μ| > `MU_CRIT` at the best fit (the source-plane χ² rewards putting an image on
+a critical curve, where any offset maps to a tiny source-plane residual). If
+the base model fails, each component in `MODEL_CANDIDATES` (m = 3 and m = 4
+multipoles centred on the BCG, a separate BCG, external shear) is added in turn
+and refitted. Among the candidates that pass, the one with the lowest BIC is
+kept; if none passes, a second component is added to the closest one (at most
+`MAX_ADDITIONS`). A cluster that still fails stops with an error and needs a
+model by hand. With `BIC_SELECT = True`, a component is also added to a
+passing model when it lowers the BIC by more than `BIC_MIN_DROP`. The χ² alone
+is not enough: for RXJ2129 the base model's χ² is only 2.7 worse than with an
+m = 3 multipole, but it puts image 6.2 on a critical curve and loses two images
+of system 6. Setting `mpoles`, `bcg` or `shear` for a cluster in
+`CLUSTER_MODEL` fixes its model by hand and skips the search.
 
 **Image parities** (the sign of 1/μ). The source-plane χ² does not check
 which side of a critical curve an image lies on. For an image pair merging
@@ -102,10 +120,9 @@ source-plane χ², glafic checks the sign of a linearly corrected
 magnification, which for |μ| ≳ 100 is dominated by the correction and has an
 essentially random sign.
 
-For RXJ2129, the base recipe reproduces the published fit but fails to form
-the image pair 3.2/3.3, and an m = 3 multipole fixes that. For a new cluster,
-start from the base recipe and let the image check in stage A tell you
-whether anything is missing.
+Each candidate's fit is cached in `results/<cluster>/model_search/`, and the
+decision in `results/<cluster>/model_choice.json`, which later runs with the
+same settings reuse.
 
 ### Likelihood
 
@@ -149,7 +166,7 @@ where it stopped.
 """)
 
 code(r"""
-import os, sys, re, json, time, math
+import os, sys, re, json, time, math, shutil
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -170,13 +187,17 @@ CLUSTER = os.environ.get("GLAFIC_CLUSTER", "rj2129")   # folder name in example_
 RUN_EXCLUDED = False              # allow a cluster marked in the summary table's 'exclude' column
 if build.is_excluded(CLUSTER) and not RUN_EXCLUDED:   # marked in example_data/venus_clusters_summary.csv
     raise ValueError(f"{CLUSTER} is excluded in venus_clusters_summary.csv; set RUN_EXCLUDED = True to run it")
-CLUSTER_MODEL = {                 # per-cluster additions to the base recipe
-    "rj2129": dict(mpoles=[(3, 2)]),       # m = 3 needed to form images 3.2/3.3
-    # "<name>": dict(shear=True, bcg=True, mpoles=[(4, 2)], parity={"3.3": -1, "3.4": +1}),
+CLUSTER_MODEL = {                 # optional per-cluster settings; "mpoles", "bcg" or "shear" fix the model by hand
+    # "<name>": dict(mpoles=[(3, 2)], bcg=True, shear=True, parity={"3.3": -1, "3.4": +1}),
 }
-MPOLES = CLUSTER_MODEL.get(CLUSTER, {}).get("mpoles", [])   # (m, n) multipoles centred on the BCG
-BCG = CLUSTER_MODEL.get(CLUSTER, {}).get("bcg", False)      # model the BCG separately
-SHEAR = CLUSTER_MODEL.get(CLUSTER, {}).get("shear", False)  # external shear (amplitude, angle)
+MANUAL_MODEL = {k: v for k, v in CLUSTER_MODEL.get(CLUSTER, {}).items() if k in ("mpoles", "bcg", "shear")}
+AUTO_MODEL = True                 # without a manual model: add components when the base model fails the image check
+MODEL_CANDIDATES = [dict(mpoles=[(3, 2)]), dict(mpoles=[(4, 2)]), dict(bcg=True), dict(shear=True)]
+MAX_ADDITIONS = 2                 # at most this many components are added to the base model
+BIC_SELECT = False                # also add a component to a passing model if it lowers the BIC by > BIC_MIN_DROP
+BIC_MIN_DROP = 10.0
+IMG_OFFSET_MAX = 5.0              # image check fails if an observed image is > this many σ from every predicted one
+MU_CRIT = 1000.0                  # ... or has |μ| above this at the best fit (it sits on a critical curve)
 PARITY = CLUSTER_MODEL.get(CLUSTER, {}).get("parity", "auto")
 # "auto": fix the parities of close pairs that straddle a critical curve at the best fit;
 # {image ID: ±1}: required signs of 1/μ, set by hand;  {}: no parity constraint
@@ -229,23 +250,27 @@ if NFW_ALPHA_ZS is None:
 REPARAM = {"lens1_anfw_p2": ("nfw_alpha", NFW_ALPHA_R, NFW_ALPHA_ZS) if USE_NFW_ALPHA else "log10",
            "lens2_gals_p7": "log10"}          # member truncation radius: flat in log10
 
-# results folder for this model setup
-TAG = "_".join(["base"] + (["speconly"] if SPEC_ONLY else []) + ([] if SHEAR else ["noshear"]) + [f"mpole{m}{n}" for m, n in MPOLES]
-               + (["bcg"] if BCG else [])
-               + (["autopar"] if PARITY == "auto" else ["mupar" + "-".join(sorted(PARITY))] if PARITY else [])
-               + ([f"cap{MAG_CAP:g}"] if MAG_CAP else [])
-               + [f"nfwa{NFW_ALPHA_R:g}z{NFW_ALPHA_ZS:g}" if USE_NFW_ALPHA else "log10M"])
+# results: one folder per cluster, holding one model setup at a time
+_PARITY_TAG = ["autopar"] if PARITY == "auto" else ["mupar" + "-".join(sorted(PARITY))] if PARITY else []
+_NFW_TAG = [f"nfwa{NFW_ALPHA_R:g}z{NFW_ALPHA_ZS:g}" if USE_NFW_ALPHA else "log10M"]
+SETTINGS_TAG = "_".join((["speconly"] if SPEC_ONLY else []) + _PARITY_TAG
+                        + ([f"cap{MAG_CAP:g}"] if MAG_CAP else []) + _NFW_TAG)   # everything but the mass model
+
+
+def model_tag(cfg):
+    # name of a model setup: the mass model cfg (mpoles, bcg, shear) plus the settings above
+    return "_".join(["base"] + (["speconly"] if SPEC_ONLY else []) + ([] if cfg["shear"] else ["noshear"])
+                    + [f"mpole{m}{n}" for m, n in cfg["mpoles"]] + (["bcg"] if cfg["bcg"] else [])
+                    + _PARITY_TAG + ([f"cap{MAG_CAP:g}"] if MAG_CAP else []) + _NFW_TAG)
+
+
 RUN_DIR = RESULTS                 # every file of this cluster: results/<cluster>/
 os.makedirs(RUN_DIR, exist_ok=True)
-_setup = os.path.join(RUN_DIR, "setup.json")
-if os.path.exists(_setup):        # one model setup per folder: never mix results of different setups
-    _old = json.load(open(_setup)).get("tag")
-    if _old != TAG:
-        raise ValueError(f"{RUN_DIR} holds results of model {_old!r}, not {TAG!r}; move or rename it "
-                         f"(e.g. to {RESULTS}_{_old}) before running this setup")
-else:
-    json.dump(dict(cluster=CLUSTER, tag=TAG), open(_setup, "w"))
-print(f"model: {TAG}  ->  {RUN_DIR}")
+SETUP_FILE = os.path.join(RUN_DIR, "setup.json")
+_old_setup = json.load(open(SETUP_FILE)) if os.path.exists(SETUP_FILE) else {}
+if _old_setup.get("settings", SETTINGS_TAG) != SETTINGS_TAG:   # checked again with the model in stage A
+    raise ValueError(f"{RUN_DIR} holds results of model {_old_setup.get('tag')!r}, not of settings "
+                     f"{SETTINGS_TAG!r}; move or rename it (e.g. to {RESULTS}_{_old_setup.get('tag')}) first")
 
 
 def show(name):
@@ -254,16 +279,15 @@ def show(name):
     plt.show()
 
 
-def write_files(outdir, pos_err):
-    return build.write_all(CLUSTER, outdir, mpoles=MPOLES, bcg=BCG, shear=SHEAR, pos_err=pos_err,
-                           spec_only=SPEC_ONLY)
-    # parities are not written to the obs file (see add_parity_penalty)
+def write_files(outdir, pos_err, cfg=None):
+    # glafic files of mass model cfg (default: the selected MODEL_CFG); parities are not written to the obs
+    # file (see add_parity_penalty)
+    cfg = cfg or MODEL_CFG
+    return build.write_all(CLUSTER, outdir, mpoles=cfg["mpoles"], bcg=cfg["bcg"], shear=cfg["shear"],
+                           pos_err=pos_err, spec_only=SPEC_ONLY)
 
 
-write_files(RUN_DIR, POS_ERR0)
-print(open(os.path.join(RUN_DIR, f"{CLUSTER}.input")).read().split("start_command")[0])
-
-gals = cl["gals"][1:] if BCG else cl["gals"]
+gals = cl["gals"]
 cmap = plt.get_cmap("tab20")
 fig, ax = plt.subplots(figsize=(6.5, 6.5))
 ax.scatter(gals[:, 0], gals[:, 1], s=150 * gals[:, 2] ** 0.5, c="0.75", label="members (size ∝ √L)")
@@ -289,8 +313,8 @@ COSMO_MODELS = {"fixed": ((), "fixed cosmology"),
                 "w0wa": (("ovary", "wvary", "wavary"), "w0waCDM")}
 
 
-def make_model(cap, cosmo="fixed", lens=None, poi=None):
-    m = gj.read_input(os.path.join(capdir(cap), f"{CLUSTER}.input"))
+def make_model(cap, cosmo="fixed", lens=None, poi=None, d=None):
+    m = gj.read_input(os.path.join(d or capdir(cap), f"{CLUSTER}.input"))
     free = COSMO_MODELS[cosmo][0]
     for k in ("ovary", "wvary", "wavary"):
         m.set_secondary(f"{k} {1 if k in free else 0}")
@@ -351,28 +375,55 @@ def muinv_obs(m, P):
 
 
 def auto_parity(m, P):
-    # parities of the close pairs that straddle a critical curve (opposite signs of 1/μ) in model P
+    # parities of the close pairs that straddle a critical curve (opposite signs of 1/μ) in model P,
+    # and one line of explanation per close pair
     mi = muinv_obs(m, P)
-    out = {}
+    out, notes = {}, []
     for a, b in CLOSE_PAIRS:
         ia, ib = IMG_IDS.index(a), IMG_IDS.index(b)
         sa, sb = int(np.sign(mi[ia])), int(np.sign(mi[ib]))
         txt = f"   close pair {a}/{b}: 1/μ = {mi[ia]:+.4f} / {mi[ib]:+.4f}"
         if sa * sb < 0:
             out[a], out[b] = sa, sb
-            print(txt + "  ->  straddles a critical curve; parities fixed")
+            notes.append(txt + "  ->  straddles a critical curve; parities fixed")
         else:
-            print(txt + "  ->  same parity, not constrained (if this is a merging pair, the best fit is "
-                  "in the wrong mode: set its parity in CLUSTER_MODEL)")
-    return out
+            notes.append(txt + "  ->  same parity, not constrained (if this is a merging pair, the best fit is "
+                         "in the wrong mode: set its parity in CLUSTER_MODEL)")
+    return out, notes
 
 
-def check_owner(d, path):
+def image_check(m, P, sigma):
+    # glafic's exact image finder on model P.  Per system: the predicted images, the offset of each observed
+    # image from the nearest predicted one and |μ| at the observed positions.  'fails' lists what is wrong.
+    rows, missing = [], []
+    for i in range(m.num_poi):
+        obs = m.obs_point[i]["tab"]; pred = m.findimg(i + 1, P=P)
+        off = np.array([np.sqrt(((pred[:, :2] - p[:2]) ** 2).sum(1).min()) if len(pred) else np.inf for p in obs])
+        mu = np.abs(1 / np.asarray(m.lensmodel(jnp.asarray(obs[:, 0]), jnp.asarray(obs[:, 1]),
+                                               float(P["point"][i, 0]), P).muinv))
+        rows.append(dict(sid=SIDS[i], zs=float(P["point"][i, 0]), obs=obs, pred=pred, off=off, mu=mu))
+        if pred.shape[0] < obs.shape[0]:
+            missing.append(SIDS[i])
+    off = np.concatenate([r["off"] for r in rows]); mu = np.concatenate([r["mu"] for r in rows])
+    jo, jm = int(np.argmax(off)), int(np.argmax(mu))
+    fails = []
+    if missing:
+        fails.append(f"missing images in system(s) {', '.join(map(str, missing))}")
+    if off[jo] > IMG_OFFSET_MAX * sigma:
+        fails.append(f"image {IMG_IDS[jo]} is {off[jo]:.2f}\" from every predicted image (> {IMG_OFFSET_MAX:g}σ)")
+    if mu[jm] > MU_CRIT:
+        fails.append(f"image {IMG_IDS[jm]} has |μ| = {mu[jm]:.0f} (on a critical curve)")
+    return dict(rows=rows, missing=missing, rms=float(np.sqrt(np.mean(off ** 2))), max_off=float(off[jo] / sigma),
+                median_mu=float(np.median(mu)), fails=fails, ok=not fails)
+
+
+def check_owner(d, path, tag=None):
     # every cached result records the cluster and model it belongs to; refuse to mix them up
-    got = (str(d.get("cluster", CLUSTER)), str(d.get("tag", TAG)))
-    if got != (CLUSTER, TAG):
+    tag = TAG if tag is None else tag
+    got = (str(d.get("cluster", CLUSTER)), str(d.get("tag", tag)))
+    if got != (CLUSTER, tag):
         raise ValueError(f"{path} belongs to cluster {got[0]!r} / model {got[1]!r}, "
-                         f"not {CLUSTER!r} / {TAG!r}; move or delete it")
+                         f"not {CLUSTER!r} / {tag!r}; move or delete it")
     return d
 
 
@@ -390,7 +441,6 @@ PLAB = {("anfw", 2): "M_vir [M_sun/h]", ("anfw", 3): "x_halo", ("anfw", 4): "y_h
         ("gals", 2): "σ* [km/s]", ("gals", 7): "r_trun* [arcsec]", ("gals", 8): "η",
         ("pert", 5): "γ_ext", ("pert", 6): "θ_γ", ("jaffe", 2): "σ_BCG [km/s]", ("jaffe", 7): "r_trun,BCG"}
 COSMO_LAB = {"omega": "Ω_m", "weos": "w0", "wa": "wa", "hubble": "h", "lambda": "Ω_Λ"}
-N_BASE = 2 + int(SHEAR) + int(BCG)                     # lenses before the multipoles
 
 
 def label(n):
@@ -399,7 +449,7 @@ def label(n):
     if m:
         i, mod, p = int(m.group(1)), m.group(2), int(m.group(3))
         if mod == "mpole" and p in (5, 6):
-            mm = MPOLES[i - N_BASE - 1][0]
+            mm = MPOLES[i - (2 + int(SHEAR) + int(BCG)) - 1][0]     # lenses: anfw, gals, [pert], [jaffe], mpoles
             return f"ε_{mm}" if p == 5 else f"θ_{mm}"
         return PLAB.get((mod, p), n)
     m = re.fullmatch(r"point(\d+)_zs", n)
@@ -421,6 +471,9 @@ md(r"""
    curve at the best fit get their parities fixed for all later stages. The
    penalty is zero at the best fit, so the fit and the calibration do not
    change. The signs are saved in `calib.json`.
+4. **Model selection** (`AUTO_MODEL`; see the introduction). Steps 1–3 run for
+   the base model and, if it fails the image check, for each candidate
+   component; the selected model's fit becomes the stage-A result.
 
 If the readme gives a published fit, its χ² (at the catalogue errors) is
 printed for comparison. The two match only when the model and the number of
@@ -428,12 +481,15 @@ free parameters match the paper's.
 """)
 
 code(r"""
-def stage_a(cap, start=None, n_starts=N_STARTS):
-    f = os.path.join(capdir(cap), "calib.json")
+def fit_setup(d, cfg, tag, n_starts=N_STARTS):
+    # stage A for mass model cfg in folder d (cached in d/calib.json): best fit at fixed cosmology,
+    # error calibration, parities
+    f = os.path.join(d, "calib.json")
     if os.path.exists(f):
-        return check_owner(json.load(open(f)), f)
-    write_files(capdir(cap), POS_ERR0)
-    m = make_model(cap, **(start or {}))        # with PARITY = "auto", no parity constraint yet
+        return check_owner(json.load(open(f)), f, tag)
+    os.makedirs(d, exist_ok=True)
+    write_files(d, POS_ERR0, cfg)
+    m = make_model(MAG_CAP, d=d)                # with PARITY = "auto", no parity constraint yet
     m.set_source_mode("profile")
     dof = dof_of(m)
     if dof <= 0:
@@ -449,24 +505,110 @@ def stage_a(cap, start=None, n_starts=N_STARTS):
     else:
         raise RuntimeError("MAP failed from every start")
     P = m.best_sources(m.unflatten(jnp.asarray(r["theta"])))
-    if PARITY == "auto":                       # read the parities off the best fit (zero penalty there)
-        print("automatic parities from the best fit:")
-        parity = auto_parity(m, P)
-    else:
-        parity = dict(PARITY)
+    # parities: read off the best fit (zero penalty there) or set by hand
+    parity, notes = auto_parity(m, P) if PARITY == "auto" else (dict(PARITY), [])
     sig = POS_ERR0 * np.sqrt(r["chi2"] / dof) if CALIBRATE_ERRORS else POS_ERR0
-    write_files(capdir(cap), sig)
-    out = dict(cluster=CLUSTER, tag=TAG, cap=cap, sigma=float(sig), chi2_raw=float(r["chi2"]), dof=int(dof),
-               lens=np.asarray(P["lens"]).tolist(), poi=np.asarray(P["point"]).tolist(), parity=parity)
+    write_files(d, sig, cfg)
+    nobs = 2 * sum(o["tab"].shape[0] for o in m.obs_point)
+    npar = sum(n.startswith("lens") or n.endswith("_zs") for n in m.theta_names)
+    out = dict(cluster=CLUSTER, tag=tag, model=cfg, cap=MAG_CAP, sigma=float(sig), chi2_raw=float(r["chi2"]),
+               dof=int(dof), nobs=int(nobs), npar=int(npar), lens=np.asarray(P["lens"]).tolist(),
+               poi=np.asarray(P["point"]).tolist(), parity=parity, parity_notes=notes)
     json.dump(out, open(f, "w"))
     return out
 
 
+def merged(cfg, add):
+    # mass model cfg with the components of add
+    out = dict(mpoles=[tuple(p) for p in cfg.get("mpoles", [])], bcg=bool(cfg.get("bcg", False)),
+               shear=bool(cfg.get("shear", False)))
+    out["mpoles"] += [tuple(p) for p in add.get("mpoles", []) if tuple(p) not in out["mpoles"]]
+    out["bcg"] |= bool(add.get("bcg", False)); out["shear"] |= bool(add.get("shear", False))
+    return out
+
+
+def evaluate(cfg):
+    # fit candidate cfg in results/<cluster>/model_search/<tag>/ (cached) and run the image check
+    tag = model_tag(cfg); d = os.path.join(RUN_DIR, "model_search", tag)
+    t0 = time.time()
+    c = fit_setup(d, cfg, tag)
+    m = make_model(MAG_CAP, lens=c["lens"], poi=c["poi"], d=d)
+    chk = image_check(m, m.params(), c["sigma"])
+    e = dict(cfg=cfg, tag=tag, dir=d, calib=c, ok=chk["ok"], fails=chk["fails"], missing=len(chk["missing"]),
+             max_off=chk["max_off"])
+    print(f"   {tag:55s} chi2 {c['chi2_raw']:8.2f}  {c['npar']:3d} par  BIC {bic(e):8.2f}  "
+          + ("passes" if e["ok"] else "FAILS: " + "; ".join(e["fails"])) + f"  ({time.time() - t0:.0f} s)")
+    return e
+
+
+def bic(e):
+    # BIC with the chi2 at a common positional error (the base model's calibrated sigma)
+    c = e["calib"]
+    return c["chi2_raw"] * (POS_ERR0 / SIGMA_REF) ** 2 + c["npar"] * np.log(c["nobs"])
+
+
+BASE_MODEL = dict(mpoles=[], bcg=False, shear=False)
+_search_key = dict(settings=SETTINGS_TAG, candidates=[merged(BASE_MODEL, a) for a in MODEL_CANDIDATES],
+                   max_additions=MAX_ADDITIONS, bic_select=BIC_SELECT, bic_min_drop=BIC_MIN_DROP,
+                   img_offset_max=IMG_OFFSET_MAX, mu_crit=MU_CRIT)
+CHOICE_FILE = os.path.join(RUN_DIR, "model_choice.json")
 t0 = time.time()
-calib = {MAG_CAP: stage_a(MAG_CAP)}        # cached after the first run; every later stage needs it
+if MANUAL_MODEL or not AUTO_MODEL:
+    MODEL_CFG = merged(BASE_MODEL, MANUAL_MODEL)
+    print("mass model " + ("set by hand in CLUSTER_MODEL" if MANUAL_MODEL else "= base model (AUTO_MODEL off)"))
+elif os.path.exists(CHOICE_FILE) and json.load(open(CHOICE_FILE)).get("key") == json.loads(json.dumps(_search_key)):
+    MODEL_CFG = merged(BASE_MODEL, json.load(open(CHOICE_FILE))["model"])
+    print(f"mass model: {model_tag(MODEL_CFG)} (selected earlier; see {CHOICE_FILE})")
+else:
+    print("model selection (image check, then BIC):")
+    _base = model_tag(BASE_MODEL)       # its calibrated σ is the common error for the BIC comparison
+    SIGMA_REF = fit_setup(os.path.join(RUN_DIR, "model_search", _base), BASE_MODEL, _base)["sigma"]
+    cur = evaluate(BASE_MODEL); tried = [cur]
+    for _ in range(MAX_ADDITIONS):
+        if cur["ok"] and not BIC_SELECT:
+            break
+        trials = [evaluate(merged(cur["cfg"], a)) for a in MODEL_CANDIDATES if merged(cur["cfg"], a) != cur["cfg"]]
+        tried += trials
+        passing = [t for t in trials if t["ok"]]
+        if not cur["ok"]:            # repair: the best passing candidate, else the closest one gets another component
+            cur = min(passing, key=bic) if passing else min(trials, key=lambda t: (t["missing"], t["max_off"]))
+        else:                        # BIC_SELECT: keep a component only for a clear BIC gain
+            best = min(passing, key=bic, default=None)
+            if best is None or bic(best) > bic(cur) - BIC_MIN_DROP:
+                break
+            cur = best
+    table = [dict(tag=t["tag"], ok=t["ok"], fails=t["fails"], chi2=t["calib"]["chi2_raw"], npar=t["calib"]["npar"],
+                  bic=bic(t)) for t in tried]
+    json.dump(dict(key=_search_key, model=cur["cfg"] if cur["ok"] else None, tag=cur["tag"], ok=cur["ok"],
+                   candidates=table), open(CHOICE_FILE, "w"), indent=1)
+    if not cur["ok"]:
+        raise RuntimeError(f"{CLUSTER}: no model with up to {MAX_ADDITIONS} added components passes the image check "
+                           f"(closest: {cur['tag']}: {'; '.join(cur['fails'])}). Set the model by hand in "
+                           f"CLUSTER_MODEL, or exclude the cluster.")
+    MODEL_CFG = cur["cfg"]
+    if cur["dir"] != RUN_DIR and not os.path.exists(os.path.join(RUN_DIR, "calib.json")):
+        shutil.copy(os.path.join(cur["dir"], "calib.json"), os.path.join(RUN_DIR, "calib.json"))
+    print(f"selected: {cur['tag']}  (model selection {time.time() - t0:.0f} s)")
+
+MPOLES, BCG, SHEAR = MODEL_CFG["mpoles"], MODEL_CFG["bcg"], MODEL_CFG["shear"]
+TAG = model_tag(MODEL_CFG)
+if _old_setup.get("tag", TAG) != TAG:      # one model setup per folder: never mix results of different setups
+    raise ValueError(f"{RUN_DIR} holds results of model {_old_setup['tag']!r}, not {TAG!r}; move or rename it "
+                     f"(e.g. to {RESULTS}_{_old_setup['tag']}) before running this setup")
+json.dump(dict(cluster=CLUSTER, tag=TAG, settings=SETTINGS_TAG, model=MODEL_CFG), open(SETUP_FILE, "w"))
+print(f"model: {TAG}  ->  {RUN_DIR}")
+write_files(RUN_DIR, POS_ERR0)
+print(open(os.path.join(RUN_DIR, f"{CLUSTER}.input")).read().split("start_command")[0])
+""")
+
+code(r"""
+t0 = time.time()
+calib = {MAG_CAP: fit_setup(RUN_DIR, MODEL_CFG, TAG)}   # cached (or copied from the model search)
 print(f"stage A: {time.time() - t0:.0f} s")
 PARITY_FIX = {k: int(v) for k, v in calib[MAG_CAP]["parity"].items()}   # in force from here on
 write_files(capdir(MAG_CAP), calib[MAG_CAP]["sigma"])   # current priors/settings, also for a cached stage A
+for ln in calib[MAG_CAP].get("parity_notes", []):
+    print(ln)
 print(f"parity constraints{' (automatic)' if PARITY == 'auto' else ''}: "
       + (", ".join(f"{k}: {v:+d}" for k, v in PARITY_FIX.items()) or "none"))
 for cap, c in calib.items():
@@ -504,27 +646,20 @@ for zs, col in zip(ZCRIT, ("tab:blue", "tab:green", "tab:red")):
     mu = jax.jit(lambda x, y: m.lensmodel(x, y, zs, P).muinv)(jnp.asarray(X), jnp.asarray(Y))
     ax.contour(X, Y, np.asarray(mu), levels=[0.0], colors=col, linewidths=0.8)
     ax.plot([], [], color=col, label=f"critical curve z_s={zs:.2f}")
-offs, mus, missing = [], [], []
-for i in range(m.num_poi):
-    obs = m.obs_point[i]["tab"]; pred = m.findimg(i + 1)
-    o = [np.sqrt(((pred[:, :2] - p[:2]) ** 2).sum(1).min()) if len(pred) else np.inf for p in obs]; offs += o
-    mu = np.abs(1 / np.asarray(m.lensmodel(jnp.asarray(obs[:, 0]), jnp.asarray(obs[:, 1]),
-                                           float(P["point"][i, 0]), P).muinv)); mus += list(mu)
-    if pred.shape[0] < obs.shape[0]:
-        missing.append(SIDS[i])
-    print(f"system {str(SIDS[i]):>4s} (z={P['point'][i,0]:.3f}): {obs.shape[0]} observed / {pred.shape[0]} predicted, "
-          f"offsets {np.round(o, 2)}, |μ| {np.round(mu, 1)}")
-    ax.scatter(obs[:, 0], obs[:, 1], marker="o", facecolor="none", edgecolor="k", s=45)
-    ax.scatter(pred[:, 0], pred[:, 1], marker="x", color=cmap(i % 20), s=30)
+chk = image_check(m, P, c["sigma"])
+for i, r in enumerate(chk["rows"]):
+    print(f"system {str(r['sid']):>4s} (z={r['zs']:.3f}): {r['obs'].shape[0]} observed / {r['pred'].shape[0]} "
+          f"predicted, offsets {np.round(r['off'], 2)}, |μ| {np.round(r['mu'], 1)}")
+    ax.scatter(r["obs"][:, 0], r["obs"][:, 1], marker="o", facecolor="none", edgecolor="k", s=45)
+    ax.scatter(r["pred"][:, 0], r["pred"][:, 1], marker="x", color=cmap(i % 20), s=30)
 ax.set_xlim(LIM, -LIM); ax.set_ylim(-LIM, LIM); ax.set_aspect("equal"); ax.legend(fontsize=8)
 ax.set_title(f"{CLUSTER}: best fit (Ω_m = 0.3, w = −1)")
 show("best_fit")
-rms = np.sqrt(np.mean(np.square(offs)))
-print(f"image-plane rms = {rms:.3f} arcsec (expect ~{c['sigma']:.2f}); median |μ| = {np.median(mus):.1f}; "
-      f"systems with missing images: {missing or 'none'}")
-if rms > 1.0 or missing:
-    print("WARNING: the MAP does not reproduce the observed images. Do not run the samplers from it; "
-          "try more N_STARTS, a different seed, or a richer model in CLUSTER_MODEL (multipoles, bcg).")
+print(f"image-plane rms = {chk['rms']:.3f} arcsec (expect ~{c['sigma']:.2f}); median |μ| = {chk['median_mu']:.1f}; "
+      f"systems with missing images: {chk['missing'] or 'none'}")
+if not chk["ok"]:
+    print("WARNING: the best fit fails the image check (" + "; ".join(chk["fails"]) + "). Do not run the "
+          "samplers from it; try more N_STARTS, or another model in CLUSTER_MODEL (multipoles, bcg, shear).")
 """)
 
 md(r"""
@@ -574,17 +709,26 @@ def is_source(n):
     return n.startswith("point") and not n.endswith("zs")
 
 
-def show_diag(res):
+def save_txt(fname, txt):
+    # print a text summary and save it as results/<cluster>/<fname>
+    print(txt)
+    open(os.path.join(RUN_DIR, fname), "w").write(txt + "\n")
+
+
+def show_diag(res, title, fname):
+    # sampler summary (time, divergences, R-hat, ESS, posterior mean and std); also saved to results/<cluster>/<fname>
     names = list(res["names"]); keep = [k for k, n in enumerate(names) if not is_source(n)]
     th = res["theta"].reshape(-1, len(names))
-    print(f"{float(res['time'])/60:.0f} min; divergences {int(res['diverging'].sum())} / {res['diverging'].size}; "
-          f"max R-hat {np.nanmax(res['rhat'][keep]):.3f}; min ESS {np.nanmin(res['ess'][keep]):.0f}; "
-          f"median {np.median(res['num_steps']):.0f} gradient evaluations per sample")
-    print(f"{'parameter':22s} {'mean':>11s} {'std':>10s} {'R-hat':>7s} {'ESS':>7s}")
+    lines = [f"=== {CLUSTER}: {title}   (model {TAG})",
+             f"{float(res['time'])/60:.0f} min; divergences {int(res['diverging'].sum())} / {res['diverging'].size}; "
+             f"max R-hat {np.nanmax(res['rhat'][keep]):.3f}; min ESS {np.nanmin(res['ess'][keep]):.0f}; "
+             f"median {np.median(res['num_steps']):.0f} gradient evaluations per sample",
+             f"{'parameter':22s} {'mean':>11s} {'std':>10s} {'R-hat':>7s} {'ESS':>7s}"]
     for k in keep:
         n = names[k]
-        print(f"{label(n):22s} {th[:, k].mean():11.4g} {th[:, k].std():10.3g} "
-              f"{res['rhat'][k]:7.3f} {res['ess'][k]:7.0f}")
+        lines.append(f"{label(n):22s} {th[:, k].mean():11.4g} {th[:, k].std():10.3g} "
+                     f"{res['rhat'][k]:7.3f} {res['ess'][k]:7.0f}")
+    save_txt(fname, "\n".join(lines))
 
 
 def cosmo_model(cap, cosmo):
@@ -604,8 +748,7 @@ for cosmo in NUTS_FILE:
         res = nuts_stage(path, mm, mm.theta0(), REPARAM_OF[cosmo])
     if res is not None:
         nuts[cosmo] = res
-        print(f"=== {COSMO_MODELS[cosmo][1]}")
-        show_diag(res)
+        show_diag(res, COSMO_MODELS[cosmo][1], NUTS_FILE[cosmo].replace(".npz", ".txt"))
         print()
 """)
 
@@ -722,13 +865,15 @@ if nuts:
                bbox_to_anchor=(0.95, 0.95), fontsize=12, title=CLUSTER)
     plt.tight_layout(); show("cosmology_corner")
 
-    print(f"median [68%]   {'':12s}" + "".join(f"{lab:>24s}" for _, _, lab, _ in COS))
+    lines = [f"=== {CLUSTER}: cosmology, median [68%]   (model {TAG})",
+             f"{'':22s}" + "".join(f"{lab:>24s}" for _, _, lab, _ in COS)]
     for k, cc in cols.items():
-        print(f"{COSMO_MODELS[k][1]:12s} posterior " + "".join(
+        lines.append(f"{COSMO_MODELS[k][1]:12s} posterior" + "".join(
             f"{interval(cc[n]) if n in cc else '':>24s}" for n, *_ in COS))
-        print(f"{'':12s} prior     " + "".join(
+        lines.append(f"{'':12s} prior    " + "".join(
             f"{interval(prior[k][n]) if n in cc else '':>24s}" for n, *_ in COS))
-    print("\nIntervals close to the prior's are prior-dominated, not constraints.")
+    lines.append("\nIntervals close to the prior's are prior-dominated, not constraints.")
+    save_txt("cosmology_summary.txt", "\n".join(lines))
 """)
 
 code(r"""
