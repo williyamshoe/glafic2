@@ -1,0 +1,52 @@
+{
+ "key": {
+  "settings": "speconly_autopar_nfwa32.5z3.12",
+  "candidates": [
+   {
+    "mpoles": [
+     [
+      3,
+      2
+     ]
+    ],
+    "bcg": false,
+    "shear": false,
+    "halo": "anfw"
+   },
+   {
+    "mpoles": [
+     [
+      4,
+      2
+     ]
+    ],
+    "bcg": false,
+    "shear": false,
+    "halo": "anfw"
+   }
+  ],
+  "max_additions": 2,
+  "bic_select": false,
+  "bic_min_drop": 10.0,
+  "img_offset_max": 5.0,
+  "mu_crit": 1000.0
+ },
+ "model": {
+  "mpoles": [],
+  "bcg": false,
+  "shear": false,
+  "halo": "anfw"
+ },
+ "tag": "base_speconly_noshear_autopar_nfwa32.5z3.12",
+ "ok": true,
+ "candidates": [
+  {
+   "tag": "base_speconly_noshear_autopar_nfwa32.5z3.12",
+   "ok": true,
+   "fails": [],
+   "chi2": 202.02838402991847,
+   "npar": 9,
+   "bic": 136.33257342172263
+  }
+ ]
+}

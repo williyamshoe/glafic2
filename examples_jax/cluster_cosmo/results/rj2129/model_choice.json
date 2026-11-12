@@ -1,0 +1,81 @@
+{
+ "key": {
+  "settings": "speconly_autopar_nfwa7.5z1.52",
+  "candidates": [
+   {
+    "mpoles": [
+     [
+      3,
+      2
+     ]
+    ],
+    "bcg": false,
+    "shear": false,
+    "halo": "anfw"
+   },
+   {
+    "mpoles": [
+     [
+      4,
+      2
+     ]
+    ],
+    "bcg": false,
+    "shear": false,
+    "halo": "anfw"
+   }
+  ],
+  "max_additions": 2,
+  "bic_select": false,
+  "bic_min_drop": 10.0,
+  "img_offset_max": 5.0,
+  "mu_crit": 1000.0
+ },
+ "model": {
+  "mpoles": [
+   [
+    3,
+    2
+   ]
+  ],
+  "bcg": false,
+  "shear": false,
+  "halo": "anfw"
+ },
+ "tag": "base_speconly_noshear_mpole32_autopar_nfwa7.5z1.52",
+ "ok": true,
+ "candidates": [
+  {
+   "tag": "base_speconly_noshear_autopar_nfwa7.5z1.52",
+   "ok": false,
+   "fails": [
+    "missing images in system(s) 6",
+    "image 6.3 is 27.43\" from every predicted image (> 5\u03c3)",
+    "image 6.2 has |\u03bc| = 5398 (on a critical curve)"
+   ],
+   "chi2": 20.201712959292255,
+   "npar": 9,
+   "bic": 68.14420946540582
+  },
+  {
+   "tag": "base_speconly_noshear_mpole32_autopar_nfwa7.5z1.52",
+   "ok": true,
+   "fails": [],
+   "chi2": 17.484465969451932,
+   "npar": 11,
+   "bic": 72.22879931496148
+  },
+  {
+   "tag": "base_speconly_noshear_mpole42_autopar_nfwa7.5z1.52",
+   "ok": false,
+   "fails": [
+    "missing images in system(s) 6",
+    "image 6.3 is 27.48\" from every predicted image (> 5\u03c3)",
+    "image 6.2 has |\u03bc| = 1388 (on a critical curve)"
+   ],
+   "chi2": 18.76317137446608,
+   "npar": 11,
+   "bic": 74.19100260115385
+  }
+ ]
+}

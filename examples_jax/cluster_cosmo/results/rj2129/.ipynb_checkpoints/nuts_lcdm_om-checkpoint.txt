@@ -1,0 +1,15 @@
+=== rj2129: ΛCDM   (model base_speconly_noshear_mpole32_autopar_nfwa7.5z1.52)
+31 min; divergences 179 / 4000; max R-hat 1.017; min ESS 440; median 63 gradient evaluations per sample
+parameter                     mean        std   R-hat     ESS
+M_vir [M_sun/h]          7.873e+14   1.58e+14   1.000    2384
+x_halo                      0.3674      0.609   1.008     581
+y_halo                     -0.3367      0.345   1.005     823
+e_halo                      0.5413     0.0224   1.001    1804
+θ_halo                      -113.3      0.506   1.001    1342
+c_halo                       5.301      0.602   1.001    2332
+σ* [km/s]                    186.3       19.9   1.002    1118
+r_trun* [arcsec]             59.83       21.9   1.001    1635
+η                            0.481      0.205   1.002    2016
+ε_3                        0.01409    0.00762   1.008     516
+θ_3                            243       10.4   1.017     440
+Ω_m                          0.237      0.163   1.002    1820

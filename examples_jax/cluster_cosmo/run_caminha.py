@@ -6,6 +6,8 @@
     python run_caminha.py --clusters rj2129 mj1931
     python run_caminha.py --dry-run             # list what would run
     python run_caminha.py --smoke               # tiny chains (SMOKE_TEST = True), to test the pipeline
+    python run_caminha.py --clusters as1063 --model shear+mpole32+mpole42
+                                                # force a mass model -> results/as1063_shear_mpole32_mpole42/
 
 The clusters are the rows marked in the 'Caminha' column of
 example_data/venus_clusters_summary.csv (folder names from 'glafic_name'),
@@ -61,7 +63,7 @@ def log(msg, logfile):
         f.write(line + "\n")
 
 
-def run_one(cluster, notebook, results, smoke, logfile):
+def run_one(cluster, notebook, results, smoke, logfile, model=""):
     """Execute the notebook for one cluster; returns (ok, seconds)."""
     nb = nbformat.read(os.path.join(HERE, notebook), as_version=4)
     if smoke:
@@ -71,10 +73,11 @@ def run_one(cluster, notebook, results, smoke, logfile):
                 c.source = c.source.replace("SMOKE_TEST = False", "SMOKE_TEST = True"); n += 1
         if n != 1:
             raise RuntimeError(f"{notebook}: could not switch on SMOKE_TEST")
-    outdir = os.path.join(HERE, results, cluster)
+    outdir = os.path.join(HERE, results, build.results_name(cluster, model))
     os.makedirs(outdir, exist_ok=True)
     out = os.path.join(outdir, notebook.replace(".ipynb", ".executed.ipynb"))
     os.environ["GLAFIC_CLUSTER"] = cluster              # the kernel inherits it
+    os.environ["GLAFIC_MODEL"] = model                  # '' = automatic model choice
     client = NotebookClient(nb, timeout=None, kernel_name="python3",
                             resources={"metadata": {"path": HERE}})
     t0 = time.time()
@@ -99,12 +102,19 @@ def main():
                     help="notebook in this folder to run (default: cluster_cosmo_models.ipynb)")
     ap.add_argument("--clusters", nargs="+", help="clusters to run instead of Caminha's (folder names)")
     ap.add_argument("--smoke", action="store_true", help="tiny chains: set SMOKE_TEST = True (results_smoke/)")
+    ap.add_argument("--model", default="",
+                    help="force this mass model for every cluster, e.g. shear+mpole32+mpole42 (components: shear, "
+                         "bcg, mpole<m><n>, gnfw); results go to results/<cluster>_<model>/")
     ap.add_argument("--dry-run", action="store_true", help="only list the clusters")
     a = ap.parse_args()
 
     if not os.path.exists(os.path.join(HERE, a.notebook)):
         raise SystemExit(f"no notebook {a.notebook} in {HERE} (run its make_notebook*.py first)")
     clusters = a.clusters or caminha_clusters()
+    try:
+        build.parse_model(a.model)
+    except ValueError as err:
+        raise SystemExit(str(err))
     unknown = [c for c in clusters if c not in build.available()]
     if unknown:
         raise SystemExit(f"unknown clusters {unknown}; available: {build.available()}")
@@ -114,18 +124,19 @@ def main():
     os.makedirs(os.path.dirname(logfile), exist_ok=True)
 
     print(f"{a.notebook} for {len(clusters)} cluster(s): {', '.join(clusters)}"
-          + (" (SMOKE_TEST)" if a.smoke else ""))
+          + (f" with mass model {a.model}" if a.model else "") + (" (SMOKE_TEST)" if a.smoke else ""))
     if excluded:
         print(f"note: {excluded} are marked 'exclude'; the notebook stops for them unless RUN_EXCLUDED = True")
     if a.dry_run:
         return
 
-    log(f"start: {a.notebook} for {', '.join(clusters)}" + (" (SMOKE_TEST)" if a.smoke else ""), logfile)
+    log(f"start: {a.notebook} for {', '.join(clusters)}" + (f" with mass model {a.model}" if a.model else "")
+        + (" (SMOKE_TEST)" if a.smoke else ""), logfile)
     status = {}
     for c in clusters:
         log(f"{c}: starting", logfile)
         try:
-            status[c] = run_one(c, a.notebook, results, a.smoke, logfile)
+            status[c] = run_one(c, a.notebook, results, a.smoke, logfile, a.model)
         except Exception:                               # kernel died, etc.: log and go on
             log(f"{c}: ERROR outside the notebook:\n{traceback.format_exc()}", logfile)
             status[c] = (False, 0.0)

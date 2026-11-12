@@ -1,0 +1,10 @@
+=== as1063: cosmology, median [68%]   (model base_speconly_noshear_autopar_nfwa32.5z3.12)
+                                           Ω_m                  w0 (w)                      wa
+ΛCDM         posterior     0.11 [ 0.07,  0.16]                                                
+             prior         0.52 [ 0.20,  0.85]                                                
+wCDM         posterior     0.20 [ 0.15,  0.25]    -1.98 [-2.60, -1.45]                        
+             prior         0.52 [ 0.20,  0.85]    -1.00 [-2.36,  0.36]                        
+w0waCDM      posterior     0.21 [ 0.16,  0.26]    -1.94 [-2.61, -1.34]    -0.68 [-2.35,  1.07]
+             prior         0.52 [ 0.20,  0.85]    -1.41 [-2.50,  0.00]    -1.06 [-2.38,  0.56]
+
+Intervals close to the prior's are prior-dominated, not constraints.

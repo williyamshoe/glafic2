@@ -197,6 +197,11 @@ CLUSTER_MODEL = {                 # optional per-cluster settings; "mpoles", "bc
     # "<name>": dict(mpoles=[(3, 2)], bcg=True, shear=True, halo="gnfw", parity={"3.3": -1, "3.4": +1}),
 }
 MANUAL_MODEL = {k: v for k, v in CLUSTER_MODEL.get(CLUSTER, {}).items() if k in ("mpoles", "bcg", "shear", "halo")}
+# GLAFIC_MODEL (e.g. "shear+mpole32+mpole42", or run_caminha.py --model): force this mass model, overriding
+# CLUSTER_MODEL and the automatic choice; its results go to results/<cluster>_<model>/, next to the auto run's
+FORCE_MODEL = os.environ.get("GLAFIC_MODEL", "").strip()
+if FORCE_MODEL:
+    MANUAL_MODEL = build.parse_model(FORCE_MODEL)[0]
 AUTO_MODEL = True                 # without a manual model: add components when the base model fails the image check
 MODEL_CANDIDATES = [dict(mpoles=[(3, 2)]), dict(mpoles=[(4, 2)])]   # multipoles only (see the introduction)
 MAX_ADDITIONS = 2                 # at most this many components are added to the base model
@@ -218,12 +223,13 @@ NFW_ALPHA_R = None                # [arcsec]; None = median image distance from 
 NFW_ALPHA_ZS = None               # source z for the deflection; None = median z_s
 COSMO_REPARAM = {"wa": ("sum_below", "weos", -3.0, 2.0, 0.0)}   # DESI: wa in [-3, 2], w0 + wa < 0
 W_PRIOR = "desi"                  # tag of the w0/wa prior in the chain file names (w0 in [-3, 1]: prior file)
+W_MAX_WCDM = 0.0                  # wCDM: w < W_MAX_WCDM, the w0waCDM cut w0 + wa < 0 at wa = 0 (None: prior file)
 NUTS_KW = dict(num_chains=4, num_warmup=1000, num_samples=1000, target_accept=0.95,
                max_tree_depth=10, init="map", init_jitter=0.01, use_approx_mass=False, chunk=250)
 MODELS = ["lcdm", "wcdm", "w0wa"]   # cosmologies to sample in stage B (finished ones are loaded from disk)
 SMOKE_TEST = False                # tiny runs, to check that the notebook works end to end
 
-RESULTS = os.path.join(HERE, "results_smoke" if SMOKE_TEST else "results", CLUSTER)
+RESULTS = os.path.join(HERE, "results_smoke" if SMOKE_TEST else "results", build.results_name(CLUSTER, FORCE_MODEL))
 if SMOKE_TEST:
     NUTS_KW.update(num_chains=2, num_warmup=20, num_samples=20, chunk=10, max_tree_depth=5)
 """)
@@ -566,7 +572,8 @@ CHOICE_FILE = os.path.join(RUN_DIR, "model_choice.json")
 t0 = time.time()
 if MANUAL_MODEL or not AUTO_MODEL:
     MODEL_CFG = merged(BASE_MODEL, MANUAL_MODEL)
-    print("mass model " + ("set by hand in CLUSTER_MODEL" if MANUAL_MODEL else "= base model (AUTO_MODEL off)"))
+    print("mass model " + (f"forced by GLAFIC_MODEL = {FORCE_MODEL!r}" if FORCE_MODEL else
+                           "set by hand in CLUSTER_MODEL" if MANUAL_MODEL else "= base model (AUTO_MODEL off)"))
 elif os.path.exists(CHOICE_FILE) and json.load(open(CHOICE_FILE)).get("key") == json.loads(json.dumps(_search_key)):
     MODEL_CFG = merged(BASE_MODEL, json.load(open(CHOICE_FILE))["model"])
     print(f"mass model: {model_tag(MODEL_CFG)} (selected earlier; see {CHOICE_FILE})")
@@ -682,12 +689,17 @@ photometric redshifts (if any) and that model's cosmological parameters, with
 the source positions marginalised. The priors are flat:
 
 * Ω_m ∈ [0.05, 1] (all models);
-* w ∈ [−3, 1] (wCDM); w0 ∈ [−3, 1] and wa ∈ [−3, 2] with **w0 + wa < 0**
-  (w0waCDM). These are DESI's ranges. The condition w0 + wa < 0 (no
-  dark-energy domination at early times) cuts the (w0, wa) box diagonally;
-  wa is sampled as the fraction of its allowed range at the current w0
-  (`sum_below`), with the Jacobian included, so the prior is exactly flat in
-  (w0, wa) without a wall in the posterior.
+* w0 ∈ [−3, 1] and wa ∈ [−3, 2] with **w0 + wa < 0** (w0waCDM). These are
+  DESI's ranges. The condition w0 + wa < 0 (no dark-energy domination at
+  early times) cuts the (w0, wa) box diagonally; wa is sampled as the
+  fraction of its allowed range at the current w0 (`sum_below`), with the
+  Jacobian included, so the prior is exactly flat in (w0, wa) without a wall
+  in the posterior.
+* w ∈ [−3, 0] (wCDM, `W_MAX_WCDM = 0`): the same cut at wa = 0, so wCDM is
+  the wa = 0 slice of w0waCDM. Without it, w > 0 (dark energy dominating at
+  high z) gives distance ratios as good as those at w < 0 for some clusters,
+  and the chains split between the two modes. DESI's own wCDM range is
+  [−3, 1]; set `W_MAX_WCDM = None` to use it.
 
 Each orientation angle is restricted to one period around the best fit
 (`gj.angle_bounds`). Chains start near the stage-A best fit, at Ω_m = 0.3,
@@ -699,15 +711,29 @@ more. If the median number of gradient evaluations per sample is
 """)
 
 code(r"""
-NUTS_FILE = {"lcdm": "nuts_lcdm_om.npz", "wcdm": f"nuts_wcdm_{W_PRIOR}.npz", "w0wa": f"nuts_w0wa_{W_PRIOR}.npz"}
+def prior_box():
+    # {parameter: (lo, hi)} of the cosmological ranges in the prior file
+    box = {}
+    for ln in open(os.path.join(capdir(MAG_CAP), f"{CLUSTER}_prior.dat")):
+        t = ln.split()
+        if len(t) == 4 and t[0] == "range" and t[1] in ("omega", "weos", "wa"):
+            box[t[1]] = (float(t[2]), float(t[3]))
+    return box
+
+
+# extra sampling bounds per cosmology: wCDM's w capped at W_MAX_WCDM (the cap is part of the chain's name)
+BOUNDS_OF = {"lcdm": {}, "w0wa": {},
+             "wcdm": {} if W_MAX_WCDM is None else {"weos": (prior_box()["weos"][0], W_MAX_WCDM)}}
+_WCDM_TAG = W_PRIOR + ("" if W_MAX_WCDM is None else f"_wlt{W_MAX_WCDM:g}")
+NUTS_FILE = {"lcdm": "nuts_lcdm_om.npz", "wcdm": f"nuts_wcdm_{_WCDM_TAG}.npz", "w0wa": f"nuts_w0wa_{W_PRIOR}.npz"}
 REPARAM_OF = {"lcdm": REPARAM, "wcdm": REPARAM, "w0wa": dict(REPARAM, **COSMO_REPARAM)}
 
 
-def nuts_stage(path, model, theta0, reparam, **over):
+def nuts_stage(path, model, theta0, reparam, bounds=None, **over):
     out = load_npz(path)
     if out is not None:
         return out
-    pipe = gj.Pipeline(model, reparam=reparam, bounds=gj.angle_bounds(model, theta0))
+    pipe = gj.Pipeline(model, reparam=reparam, bounds=gj.angle_bounds(model, theta0, extra=bounds))
     pipe.set_map(theta0)
     h = pipe.hmc(checkpoint=path.replace(".npz", ".ckpt"), **dict(NUTS_KW, **over))
     d = gj.diagnostics(h)
@@ -757,7 +783,7 @@ for cosmo in NUTS_FILE:
     if res is None and cosmo in MODELS:
         mm = cosmo_model(MAG_CAP, cosmo)
         print(f"--- {COSMO_MODELS[cosmo][1]}: {mm.ndim} sampled parameters")
-        res = nuts_stage(path, mm, mm.theta0(), REPARAM_OF[cosmo])
+        res = nuts_stage(path, mm, mm.theta0(), REPARAM_OF[cosmo], bounds=BOUNDS_OF[cosmo])
     if res is not None:
         nuts[cosmo] = res
         show_diag(res, COSMO_MODELS[cosmo][1], NUTS_FILE[cosmo].replace(".npz", ".txt"))
@@ -797,13 +823,9 @@ def prior_draws(n=400_000, seed=0):
     # {model: {parameter: draws}} from the flat priors actually used: ranges from the prior file and
     # the wa treatment from COSMO_REPARAM.  With the w0 + wa cut, w0's prior in w0waCDM is not flat.
     rng = np.random.default_rng(seed)
-    box = {}
-    for ln in open(os.path.join(capdir(MAG_CAP), f"{CLUSTER}_prior.dat")):
-        t = ln.split()
-        if len(t) == 4 and t[0] == "range" and t[1] in ("omega", "weos", "wa"):
-            box[t[1]] = (float(t[2]), float(t[3]))
+    box = prior_box()
     om = rng.uniform(*box["omega"], n)
-    out = {"lcdm": {"omega": om}, "wcdm": {"omega": om, "weos": rng.uniform(*box["weos"], n)}}
+    out = {"lcdm": {"omega": om}, "wcdm": {"omega": om, "weos": rng.uniform(*BOUNDS_OF["wcdm"].get("weos", box["weos"]), n)}}
     spec = COSMO_REPARAM.get("wa")
     w0 = rng.uniform(*box["weos"], 4 * n)
     keep = np.ones(4 * n, bool)
@@ -938,6 +960,11 @@ if nuts:
 md(r"""
 ## Notes
 
+* **Testing the mass model.** Set `GLAFIC_MODEL` (e.g.
+  `shear+mpole32+mpole42`, or `run_caminha.py --model ...`) to force a richer
+  mass model; it runs in `results/<cluster>_<model>/`, so it can be compared
+  with the automatically selected model. A cosmology that moves when the
+  model gains freedom was set by the mass model, not by the distances.
 * **Running several clusters.** One kernel per cluster: set `GLAFIC_CLUSTER`
   in each batch job. Results go to separate folders, and the w0waCDM chain
   (`nuts_w0wa_desi.npz`) is shared with `cluster_cosmo_hmc.ipynb` when the

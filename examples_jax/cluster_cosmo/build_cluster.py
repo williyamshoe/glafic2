@@ -40,6 +40,43 @@ DATA = os.path.abspath(os.path.join(HERE, "..", "..", "example_data"))
 SUMMARY = "venus_clusters_summary.csv"      # optional table in ``data``, with an 'exclude' column
 
 
+def parse_model(spec):
+    """Mass model from a string of '+'-joined components, e.g. 'shear+bcg+mpole32+mpole42+gnfw'.
+
+    Components: 'shear', 'bcg', 'mpole<m><n>' (an (m, n) multipole), 'anfw' or 'gnfw' (halo
+    profile); 'base' or '' is the base model.  Returns (cfg, label): cfg in the form of the
+    notebook's CLUSTER_MODEL (keys mpoles, bcg, shear, halo), and a canonical label for
+    folder names ('' for the base model).
+    """
+    cfg = dict(mpoles=[], bcg=False, shear=False, halo="anfw")
+    for tok in (t.strip().lower() for t in (spec or "").split("+")):
+        if tok in ("", "base"):
+            continue
+        if tok in ("shear", "bcg"):
+            cfg[tok] = True
+        elif tok in ("anfw", "gnfw"):
+            cfg["halo"] = tok
+        elif re.fullmatch(r"mpole\d\d", tok):
+            if (int(tok[5]), int(tok[6])) not in cfg["mpoles"]:
+                cfg["mpoles"].append((int(tok[5]), int(tok[6])))
+        else:
+            raise ValueError(f"unknown mass-model component {tok!r} in {spec!r} "
+                             "(use shear, bcg, mpole<m><n>, anfw, gnfw, joined by '+')")
+    cfg["mpoles"].sort()
+    label = "_".join((["shear"] if cfg["shear"] else []) + (["bcg"] if cfg["bcg"] else [])
+                     + [f"mpole{m}{n}" for m, n in cfg["mpoles"]]
+                     + ([cfg["halo"]] if cfg["halo"] != "anfw" else []))
+    return cfg, label
+
+
+def results_name(cluster, model_spec=""):
+    """Folder under results/ for ``cluster``: the cluster name, plus '_<label>' when the mass model
+    is forced with ``model_spec`` (GLAFIC_MODEL), so a forced model never shares the auto-selected
+    model's folder."""
+    label = parse_model(model_spec)[1]
+    return f"{cluster}_{label}" if label else cluster
+
+
 def available(data=DATA, excluded=True):
     """Names of the clusters in ``data`` that have a multiple-image catalogue
     (without the ones marked in the summary table's 'exclude' column if ``excluded=False``)."""

@@ -1,0 +1,15 @@
+=== as1063: w0waCDM   (model base_speconly_noshear_autopar_nfwa32.5z3.12)
+32 min; divergences 0 / 4000; max R-hat 1.002; min ESS 513; median 127 gradient evaluations per sample
+parameter                     mean        std   R-hat     ESS
+M_vir [M_sun/h]          2.443e+15   3.66e+14   1.000    3065
+x_halo                     -0.2526      0.203   0.999    3326
+y_halo                     -0.0232       0.18   1.000    3458
+e_halo                      0.4865     0.0133   0.999    3472
+θ_halo                      -127.8      0.154   1.000    5528
+c_halo                       3.861      0.269   1.002     513
+σ* [km/s]                    151.5       8.68   1.001    2604
+r_trun* [arcsec]             81.66       13.1   1.001    2446
+η                           0.3944      0.131   1.001    1520
+Ω_m                         0.2085     0.0557   1.002     978
+w0                          -1.948      0.568   1.001    1124
+wa                         -0.6521       1.45   1.000    2942

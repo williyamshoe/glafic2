@@ -1,0 +1,9 @@
+[2026-11-12 13:58:54] start: cluster_cosmo_models.ipynb for rj2129 with mass model shear+mpole32 (SMOKE_TEST)
+[2026-11-12 13:58:54] rj2129: starting
+[2026-11-12 13:58:58] rj2129: FAILED in a notebook cell: ModuleNotFoundError: No module named 'jax'
+[2026-11-12 13:58:58] rj2129: stopped in 0.1 min; executed notebook: results_smoke/rj2129_shear_mpole32/cluster_cosmo_models.executed.ipynb
+[2026-11-12 13:58:58] summary: rj2129 FAILED (0 min)
+[2026-11-12 13:59:06] start: cluster_cosmo_models.ipynb for rj2129 with mass model shear+mpole32 (SMOKE_TEST)
+[2026-11-12 13:59:06] rj2129: starting
+[2026-11-12 14:10:45] start: cluster_cosmo_models.ipynb for rj2129 with mass model shear+mpole32 (SMOKE_TEST)
+[2026-11-12 14:10:45] rj2129: starting

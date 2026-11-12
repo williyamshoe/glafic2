@@ -1,0 +1,17 @@
+=== rj2129: w0waCDM   (model base_speconly_noshear_mpole32_autopar_nfwa7.5z1.52)
+31 min; divergences 112 / 4000; max R-hat 1.005; min ESS 559; median 63 gradient evaluations per sample
+parameter                     mean        std   R-hat     ESS
+M_vir [M_sun/h]           9.28e+14   3.33e+14   1.001    2008
+x_halo                      0.3103      0.603   1.003     651
+y_halo                     -0.2949      0.358   1.002     814
+e_halo                      0.5272     0.0279   1.002    1245
+θ_halo                      -113.3      0.501   1.001    1485
+c_halo                       4.499      0.635   1.002     994
+σ* [km/s]                    186.6       18.7   1.003    1731
+r_trun* [arcsec]             62.46       22.1   1.001    1929
+η                           0.4767      0.206   1.001    2019
+ε_3                        0.01334    0.00767   1.005     666
+θ_3                          243.6       12.8   1.005     559
+Ω_m                         0.3481      0.163   1.001    1215
+w0                           -1.68      0.728   1.003    1290
+wa                         -0.7067       1.37   1.000    3584

@@ -1,0 +1,13 @@
+# parameter ranges (flat priors inside); Oguri et al. VENUS recipe
+range lens 1 2 1.0e13 1.0e16
+range lens 1 3 -15.0 15.0
+range lens 1 4 -15.0 15.0
+range lens 1 5 0.0 0.8
+range lens 1 6 -720.0 720.0
+range lens 1 7 1.0 40.0
+range lens 2 2 100.0 400.0
+range lens 2 7 1.0 100.0
+range lens 2 8 0.2 1.5
+range omega 0.05 1.0
+range weos -3.0 1.0
+range wa -3.0 2.0
