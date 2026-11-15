@@ -1,8 +1,20 @@
-[2026-11-12 09:12:09] start: cluster_cosmo_models.ipynb for rj2129, as1063, mj0329, mj1931, mj2129
-[2026-11-12 09:12:09] rj2129: starting
-[2026-11-12 10:46:21] rj2129: done in 94.2 min; executed notebook: results/rj2129/cluster_cosmo_models.executed.ipynb
-[2026-11-12 10:46:21] as1063: starting
-[2026-11-12 12:30:46] as1063: done in 104.4 min; executed notebook: results/as1063/cluster_cosmo_models.executed.ipynb
-[2026-11-12 12:30:46] mj0329: starting
-[2026-11-12 13:27:00] mj0329: done in 56.2 min; executed notebook: results/mj0329/cluster_cosmo_models.executed.ipynb
-[2026-11-12 13:27:00] mj1931: starting
+[2026-11-13 11:50:59] start: cluster_cosmo_models.ipynb for rj2129, as1063, mj0329, mj1931, mj2129
+[2026-11-13 11:50:59] rj2129: starting
+[2026-11-13 14:09:23] rj2129: done in 138.4 min; executed notebook: results/rj2129/cluster_cosmo_models.executed.ipynb
+[2026-11-13 14:09:23] as1063: starting
+[2026-11-13 16:34:49] as1063: done in 145.4 min; executed notebook: results/as1063/cluster_cosmo_models.executed.ipynb
+[2026-11-13 16:34:49] mj0329: starting
+[2026-11-13 17:36:20] mj0329: done in 61.5 min; executed notebook: results/mj0329/cluster_cosmo_models.executed.ipynb
+[2026-11-13 17:36:20] mj1931: starting
+[2026-11-13 20:56:09] start: cluster_cosmo_models.ipynb for rj2129, as1063, mj0329, mj1931, mj2129
+[2026-11-13 20:56:09] rj2129: starting
+[2026-11-13 20:59:55] rj2129: done in 3.8 min; executed notebook: results/rj2129/cluster_cosmo_models.executed.ipynb
+[2026-11-13 20:59:55] as1063: starting
+[2026-11-13 21:11:05] as1063: done in 11.2 min; executed notebook: results/as1063/cluster_cosmo_models.executed.ipynb
+[2026-11-13 21:11:05] mj0329: starting
+[2026-11-13 21:16:06] mj0329: done in 5.0 min; executed notebook: results/mj0329/cluster_cosmo_models.executed.ipynb
+[2026-11-13 21:16:06] mj1931: starting
+[2026-11-13 22:16:02] mj1931: done in 59.9 min; executed notebook: results/mj1931/cluster_cosmo_models.executed.ipynb
+[2026-11-13 22:16:02] mj2129: starting
+[2026-11-14 02:37:32] mj2129: done in 261.5 min; executed notebook: results/mj2129/cluster_cosmo_models.executed.ipynb
+[2026-11-14 02:37:32] summary: rj2129 ok (4 min), as1063 ok (11 min), mj0329 ok (5 min), mj1931 ok (60 min), mj2129 ok (262 min)

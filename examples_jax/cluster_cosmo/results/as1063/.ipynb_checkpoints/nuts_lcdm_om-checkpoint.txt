@@ -1,13 +1,15 @@
-=== as1063: ΛCDM   (model base_speconly_noshear_autopar_nfwa32.5z3.12)
-27 min; divergences 1 / 4000; max R-hat 1.002; min ESS 1254; median 127 gradient evaluations per sample
+=== as1063: ΛCDM   (model base_speconly_noshear_mpole42_autopar_nfwa32.5z3.12)
+38 min; divergences 8 / 4000; max R-hat 1.003; min ESS 1093; median 127 gradient evaluations per sample
 parameter                     mean        std   R-hat     ESS
-M_vir [M_sun/h]          1.956e+15   1.55e+14   1.002    2121
-x_halo                     -0.3158      0.199   0.999    3587
-y_halo                    -0.05497      0.176   1.000    3507
-e_halo                      0.5125    0.00849   1.000    2317
-θ_halo                      -127.8      0.151   0.999    4689
-c_halo                       4.895      0.294   1.001    1254
-σ* [km/s]                    154.7       8.75   1.000    2599
-r_trun* [arcsec]             78.95       14.2   1.000    1692
-η                           0.4284       0.13   1.000    1325
-Ω_m                         0.1176      0.048   1.002    1386
+M_vir [M_sun/h]          1.664e+15   1.78e+14   1.000    1871
+x_halo                     -0.3199      0.169   1.001    3182
+y_halo                    -0.01865      0.155   1.000    3360
+e_halo                      0.5442     0.0124   1.000    2004
+θ_halo                       232.1      0.141   1.000    4381
+c_halo                       4.648      0.295   1.002    1093
+σ* [km/s]                      162       8.38   1.000    2280
+r_trun* [arcsec]             84.17       11.6   1.000    2405
+η                           0.4183       0.12   1.003    1532
+ε_4                       0.009166    0.00181   1.000    2362
+θ_4                          6.045       1.41   1.001    2825
+Ω_m                         0.2023     0.0853   1.001    1481

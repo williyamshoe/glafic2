@@ -1,0 +1,10 @@
+=== mj2129: cosmology, median [68%]   (model base_speconly_noshear_mpole42_gnfw_autopar_nfwa21z2.24)
+                                           Ω_m                  w0 (w)                      wa
+ΛCDM         posterior     0.83 [ 0.62,  0.95]                                                
+             prior         0.52 [ 0.20,  0.85]                                                
+wCDM         posterior     0.73 [ 0.29,  0.93]    -0.66 [-2.28, -0.17]                        
+             prior         0.52 [ 0.20,  0.85]    -1.50 [-2.52, -0.48]                        
+w0waCDM      posterior     0.42 [ 0.16,  0.81]     0.45 [-0.66,  0.80]    -1.76 [-2.62, -0.71]
+             prior         0.52 [ 0.20,  0.85]    -1.41 [-2.50,  0.00]    -1.06 [-2.38,  0.56]
+
+Intervals close to the prior's are prior-dominated, not constraints.

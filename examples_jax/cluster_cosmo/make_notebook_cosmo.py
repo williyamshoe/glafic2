@@ -86,28 +86,55 @@ unconstrained, and the amplitude–angle pair forms a funnel at γ = 0 that
 NUTS samples poorly.
 
 **Automatic model selection** (`AUTO_MODEL`, stage A). The base model is fitted
-first and checked with glafic's exact image finder. It fails the check if a
-system has fewer predicted than observed images, if an observed image lies more
-than `IMG_OFFSET_MAX` σ from every predicted image, or if an observed image has
-|μ| > `MU_CRIT` at the best fit (the source-plane χ² rewards putting an image on
-a critical curve, where any offset maps to a tiny source-plane residual). If
-the base model fails, each multipole in `MODEL_CANDIDATES` (m = 3 and m = 4,
-centred on the BCG) is added in turn and refitted. Among the candidates that pass, the one with the lowest BIC is
+first and checked with glafic's exact image finder. Predicted images are
+matched one-to-one to the observed ones, closest pairs first. The check fails
+if a system has fewer predicted than observed images, if an observed image is
+left without a predicted one or lies more than `IMG_OFFSET_MAX` σ from it, or
+if an observed image has |μ| > `MU_CRIT` at the best fit (the source-plane χ²
+rewards putting an image on a critical curve, where any offset maps to a tiny
+source-plane residual). A large |μ| is accepted for the two images of a
+**merging pair**, a close pair (closer than `PAIR_SEP`) on opposite sides of a
+critical curve, where it is physical. If
+the base model fails, each component in `MODEL_CANDIDATES` is added in turn and
+refitted. Among the candidates that pass, the one with the lowest BIC is
 kept; if none passes, a second component is added to the closest one (at most
 `MAX_ADDITIONS`). A cluster that still fails stops with an error and needs a
-model by hand. With `BIC_SELECT = True`, a component is also added to a
-passing model when it lowers the BIC by more than `BIC_MIN_DROP`. The χ² alone
+model by hand. With `BIC_SELECT = True` (the default), a component is also
+added to a passing model when it lowers the BIC by more than `BIC_MIN_DROP`,
+one at a time, up to `MAX_ADDITIONS`.
+
+**Problematic images** (`AUTO_DROP`). A failure can be the model's or the
+image's (a wrong identification, system membership or redshift). The first
+round of the search (the base model and each single addition to it) tells
+them apart. Failures that move from image to image between models point to
+the mass model. An image that fails in at least `DROP_FRAC` of those models
+cannot be placed whatever component is added, so it is left out and the search
+is repeated without it. This only happens when the base model fails, and never
+for more than `MAX_DROP_FRAC` of the images; beyond that the model is at fault.
+The decision uses only the fixed-cosmology fits of stage A, never the
+cosmology. The images left out are part of the model tag (`drop…`) and are
+listed in `model_choice.json` with the per-image failure counts. Set
+`drop=[...]` in `CLUSTER_MODEL` to leave images out by hand (a forced
+`GLAFIC_MODEL` skips the search, and with it the automatic drop). The χ² alone
 is not enough: for RXJ2129 the base model's χ² is only 2.7 worse than with an
 m = 3 multipole, but it puts image 6.2 on a critical curve and loses two images
 of system 6. Setting `mpoles`, `bcg`, `shear` or `halo` for a cluster in
 `CLUSTER_MODEL` fixes its model by hand and skips the search.
 
-Only multipoles are candidates. A separate BCG (`bcg=True`), external shear
-(`shear=True`) and a generalized NFW halo with a free inner slope
-(`halo="gnfw"`) can be set by hand, but they change more than the angular
-structure. In tests on RXJ2129, a free BCG was fitted with almost no mass,
-and the gNFW's inner slope ran to its lower limit (a flat core). Both lower
-the χ² a lot, but they move mass between the halo, the BCG and the members.
+The candidates are external shear (`shear=True`), a separate BCG
+(`bcg=True`), a generalized NFW halo with a free inner slope (`halo="gnfw"`)
+and the m = 3 and m = 4 multipoles. Why not multipoles only: a mass model
+that is too rigid biases the cosmology. Ω_m (or w) then absorbs part of the
+misfit, because the distance ratios between source planes are the model's
+only other freedom in the radial direction. For RXJ2129 with the m = 3
+multipole alone, the χ² rises with Ω_m about 2.7 times faster than the
+distance ratios themselves allow (mock_cosmo.py), pulling Ω_m low. A BCG or a
+gNFW halo lowers the χ² by about 15 and removes that excess. Caveats: these
+components move mass between the halo, the BCG and the members. In earlier
+RXJ2129 tests a free BCG came out with almost no mass, and the gNFW inner slope
+ran to its lower limit (a flat core, as in the cored dPIE halos of Caminha et
+al.). Check the selected model's parameters, and compare runs with
+`GLAFIC_MODEL`.
 
 **Image parities** (the sign of 1/μ). The source-plane χ² does not check
 which side of a critical curve an image lies on. For an image pair merging
@@ -194,7 +221,8 @@ RUN_EXCLUDED = False              # allow a cluster marked in the summary table'
 if build.is_excluded(CLUSTER) and not RUN_EXCLUDED:   # marked in example_data/venus_clusters_summary.csv
     raise ValueError(f"{CLUSTER} is excluded in venus_clusters_summary.csv; set RUN_EXCLUDED = True to run it")
 CLUSTER_MODEL = {                 # optional per-cluster settings; "mpoles", "bcg", "shear" or "halo" fix the model by hand
-    # "<name>": dict(mpoles=[(3, 2)], bcg=True, shear=True, halo="gnfw", parity={"3.3": -1, "3.4": +1}),
+    # "<name>": dict(mpoles=[(3, 2)], bcg=True, shear=True, halo="gnfw", parity={"3.3": -1, "3.4": +1},
+    #                drop=["10.3"]),
 }
 MANUAL_MODEL = {k: v for k, v in CLUSTER_MODEL.get(CLUSTER, {}).items() if k in ("mpoles", "bcg", "shear", "halo")}
 # GLAFIC_MODEL (e.g. "shear+mpole32+mpole42", or run_caminha.py --model): force this mass model, overriding
@@ -203,12 +231,17 @@ FORCE_MODEL = os.environ.get("GLAFIC_MODEL", "").strip()
 if FORCE_MODEL:
     MANUAL_MODEL = build.parse_model(FORCE_MODEL)[0]
 AUTO_MODEL = True                 # without a manual model: add components when the base model fails the image check
-MODEL_CANDIDATES = [dict(mpoles=[(3, 2)]), dict(mpoles=[(4, 2)])]   # multipoles only (see the introduction)
-MAX_ADDITIONS = 2                 # at most this many components are added to the base model
-BIC_SELECT = False                # also add a component to a passing model if it lowers the BIC by > BIC_MIN_DROP
+MODEL_CANDIDATES = [dict(shear=True), dict(bcg=True), dict(halo="gnfw"),
+                    dict(mpoles=[(3, 2)]), dict(mpoles=[(4, 2)])]   # components the search may add
+MAX_ADDITIONS = 3                 # at most this many components are added to the base model
+BIC_SELECT = True                 # also add a component to a passing model if it lowers the BIC by > BIC_MIN_DROP
 BIC_MIN_DROP = 10.0
-IMG_OFFSET_MAX = 5.0              # image check fails if an observed image is > this many σ from every predicted one
-MU_CRIT = 1000.0                  # ... or has |μ| above this at the best fit (it sits on a critical curve)
+IMG_OFFSET_MAX = 5.0              # image check fails if an observed image is > this many σ from its predicted one
+MU_CRIT = 1000.0                  # ... or has |μ| above this at the best fit and is not one of a merging pair
+DROP_IMAGES = CLUSTER_MODEL.get(CLUSTER, {}).get("drop", [])   # image IDs left out by hand, e.g. ["10.3"]
+AUTO_DROP = True                  # leave out images that fail in most first-round models (the data, not the model)
+DROP_FRAC = 0.5                   # ... in at least this fraction of them (the base model and each single addition)
+MAX_DROP_FRAC = 0.1               # ... but never more than this fraction of the images (else the model is at fault)
 PARITY = CLUSTER_MODEL.get(CLUSTER, {}).get("parity", "auto")
 # "auto": fix the parities of close pairs that straddle a critical curve at the best fit;
 # {image ID: ±1}: required signs of 1/μ, set by hand;  {}: no parity constraint
@@ -237,7 +270,7 @@ if SMOKE_TEST:
 md("## 1. Data")
 
 code(r"""
-cl = build.load(CLUSTER, spec_only=SPEC_ONLY)
+cl = build.load(CLUSTER, spec_only=SPEC_ONLY, drop_images=DROP_IMAGES)
 print(build.summary(cl))
 if PARITY != "auto":
     bad = set(PARITY) - {iid for s in cl["systems"].values() for iid in s["ids"]}
@@ -273,10 +306,12 @@ SETTINGS_TAG = "_".join((["speconly"] if SPEC_ONLY else []) + _PARITY_TAG
 
 
 def model_tag(cfg):
-    # name of a model setup: the mass model cfg (mpoles, bcg, shear) plus the settings above
+    # name of a model setup: the mass model cfg (mpoles, bcg, shear), the images left out (DROP) and the
+    # settings above
     return "_".join(["base"] + (["speconly"] if SPEC_ONLY else []) + ([] if cfg["shear"] else ["noshear"])
                     + [f"mpole{m}{n}" for m, n in cfg["mpoles"]] + (["bcg"] if cfg["bcg"] else [])
                     + ([cfg["halo"]] if cfg.get("halo", "anfw") != "anfw" else [])
+                    + (["drop" + "-".join(DROP)] if DROP else [])
                     + _PARITY_TAG + ([f"cap{MAG_CAP:g}"] if MAG_CAP else []) + _NFW_TAG)
 
 
@@ -300,7 +335,7 @@ def write_files(outdir, pos_err, cfg=None):
     # file (see add_parity_penalty)
     cfg = cfg or MODEL_CFG
     return build.write_all(CLUSTER, outdir, mpoles=cfg["mpoles"], bcg=cfg["bcg"], shear=cfg["shear"],
-                           halo=cfg.get("halo", "anfw"), pos_err=pos_err, spec_only=SPEC_ONLY)
+                           halo=cfg.get("halo", "anfw"), pos_err=pos_err, spec_only=SPEC_ONLY, drop_images=DROP)
 
 
 gals = cl["gals"]
@@ -344,10 +379,26 @@ def make_model(cap, cosmo="fixed", lens=None, poi=None, d=None):
 PARITY_TOL = 1e-4                 # softness of the parity wall, in 1/μ
 # parities in force: set by hand, or (PARITY = "auto") found from the best fit in stage A
 PARITY_FIX = {} if PARITY == "auto" else dict(PARITY)
-IMG_IDS = [iid for s in systems.values() for iid in s["ids"]]   # same order as the obs file
-CLOSE_PAIRS = [(s["ids"][a], s["ids"][b]) for s in systems.values()
-               for a in range(len(s["ids"])) for b in range(a + 1, len(s["ids"]))
-               if np.hypot(*np.subtract(s["xy"][a], s["xy"][b])) < PAIR_SEP]
+def _img_key(iid):
+    return [(0, int(t), "") if t.isdigit() else (1, 0, t) for t in str(iid).split(".")]
+
+
+def set_data(drop):
+    # fit the catalogue without the images in drop: resets the data (cl, systems, SIDS, IMG_IDS, CLOSE_PAIRS).
+    # A system left with one image is left out.
+    global DROP, cl, systems, SIDS, IMG_IDS, CLOSE_PAIRS
+    DROP = sorted({str(i) for i in drop}, key=_img_key)
+    cl = build.load(CLUSTER, spec_only=SPEC_ONLY, drop_images=DROP)
+    systems = cl["systems"]
+    SIDS = list(systems)                                            # glafic point order
+    IMG_IDS = [iid for s in systems.values() for iid in s["ids"]]   # same order as the obs file
+    CLOSE_PAIRS = [(s["ids"][a], s["ids"][b]) for s in systems.values()
+                   for a in range(len(s["ids"])) for b in range(a + 1, len(s["ids"]))
+                   if np.hypot(*np.subtract(s["xy"][a], s["xy"][b])) < PAIR_SEP]
+
+
+set_data(DROP_IMAGES)
+N_IMG0 = len(IMG_IDS)                                               # before any automatic drop
 
 
 def add_parity_penalty(m):
@@ -408,28 +459,56 @@ def auto_parity(m, P):
     return out, notes
 
 
+def match_images(obs, pred):
+    # one-to-one assignment of predicted to observed images, closest pairs first; returns the offset of
+    # each observed image from its predicted one (inf: left without one)
+    off = np.full(len(obs), np.inf)
+    if len(pred):
+        d = np.hypot(obs[:, None, 0] - pred[None, :, 0], obs[:, None, 1] - pred[None, :, 1])
+        for _ in range(min(len(obs), len(pred))):
+            j, k = np.unravel_index(np.argmin(d), d.shape)
+            off[j] = d[j, k]; d[j, :] = np.inf; d[:, k] = np.inf
+    return off
+
+
 def image_check(m, P, sigma):
     # glafic's exact image finder on model P.  Per system: the predicted images, the offset of each observed
-    # image from the nearest predicted one and |μ| at the observed positions.  'fails' lists what is wrong.
+    # image from its predicted one (one-to-one; inf if none is left) and |μ| at the observed positions.
+    # 'bad' maps each failing image to the reason, 'fails' summarises them.
     rows, missing = [], []
     for i in range(m.num_poi):
-        obs = m.obs_point[i]["tab"]; pred = m.findimg(i + 1, P=P)
-        off = np.array([np.sqrt(((pred[:, :2] - p[:2]) ** 2).sum(1).min()) if len(pred) else np.inf for p in obs])
-        mu = np.abs(1 / np.asarray(m.lensmodel(jnp.asarray(obs[:, 0]), jnp.asarray(obs[:, 1]),
-                                               float(P["point"][i, 0]), P).muinv))
-        rows.append(dict(sid=SIDS[i], zs=float(P["point"][i, 0]), obs=obs, pred=pred, off=off, mu=mu))
+        obs = m.obs_point[i]["tab"]; pred = np.asarray(m.findimg(i + 1, P=P))
+        off = match_images(obs[:, :2], pred[:, :2] if len(pred) else pred)
+        mi = np.asarray(m.lensmodel(jnp.asarray(obs[:, 0]), jnp.asarray(obs[:, 1]),
+                                    float(P["point"][i, 0]), P).muinv)
+        rows.append(dict(sid=SIDS[i], zs=float(P["point"][i, 0]), obs=obs, pred=pred, off=off, mu=np.abs(1 / mi),
+                         muinv=mi))
         if pred.shape[0] < obs.shape[0]:
             missing.append(SIDS[i])
     off = np.concatenate([r["off"] for r in rows]); mu = np.concatenate([r["mu"] for r in rows])
-    jo, jm = int(np.argmax(off)), int(np.argmax(mu))
+    mi = np.concatenate([r["muinv"] for r in rows])
+    # merging pairs: close pairs on opposite sides of a critical curve, where a large |μ| is physical
+    merging = {i for a, b in CLOSE_PAIRS if np.sign(mi[IMG_IDS.index(a)]) * np.sign(mi[IMG_IDS.index(b)]) < 0
+               for i in (a, b)}
+    bad = {}
+    for j, iid in enumerate(IMG_IDS):
+        if not np.isfinite(off[j]):
+            bad[iid] = "no predicted image"
+        elif off[j] > IMG_OFFSET_MAX * sigma:
+            bad[iid] = f"{off[j]:.2f}\" off"
+        elif mu[j] > MU_CRIT and iid not in merging:
+            bad[iid] = f"|μ| = {mu[j]:.0f}"
     fails = []
     if missing:
         fails.append(f"missing images in system(s) {', '.join(map(str, missing))}")
-    if off[jo] > IMG_OFFSET_MAX * sigma:
-        fails.append(f"image {IMG_IDS[jo]} is {off[jo]:.2f}\" from every predicted image (> {IMG_OFFSET_MAX:g}σ)")
-    if mu[jm] > MU_CRIT:
-        fails.append(f"image {IMG_IDS[jm]} has |μ| = {mu[jm]:.0f} (on a critical curve)")
-    return dict(rows=rows, missing=missing, rms=float(np.sqrt(np.mean(off ** 2))), max_off=float(off[jo] / sigma),
+    if any(why == "no predicted image" for why in bad.values()):
+        fails.append("unmatched: " + ", ".join(iid for iid, why in bad.items() if why == "no predicted image"))
+    lone = [f"{iid} ({why})" for iid, why in bad.items() if why != "no predicted image"]
+    if lone:
+        fails.append(f"> {IMG_OFFSET_MAX:g}σ off or on a critical curve: " + ", ".join(lone))
+    fin = np.isfinite(off)
+    return dict(rows=rows, missing=missing, bad=bad, merging=sorted(merging, key=_img_key),
+                rms=float(np.sqrt(np.mean(off[fin] ** 2))), max_off=float(off[fin].max() / sigma),
                 median_mu=float(np.median(mu)), fails=fails, ok=not fails)
 
 
@@ -552,7 +631,7 @@ def evaluate(cfg):
     m = make_model(MAG_CAP, lens=c["lens"], poi=c["poi"], d=d)
     chk = image_check(m, m.params(), c["sigma"])
     e = dict(cfg=cfg, tag=tag, dir=d, calib=c, ok=chk["ok"], fails=chk["fails"], missing=len(chk["missing"]),
-             max_off=chk["max_off"])
+             max_off=chk["max_off"], bad=chk["bad"])
     print(f"   {tag:55s} chi2 {c['chi2_raw']:8.2f}  {c['npar']:3d} par  BIC {bic(e):8.2f}  "
           + ("passes" if e["ok"] else "FAILS: " + "; ".join(e["fails"])) + f"  ({time.time() - t0:.0f} s)")
     return e
@@ -567,26 +646,24 @@ def bic(e):
 BASE_MODEL = dict(mpoles=[], bcg=False, shear=False, halo="anfw")
 _search_key = dict(settings=SETTINGS_TAG, candidates=[merged(BASE_MODEL, a) for a in MODEL_CANDIDATES],
                    max_additions=MAX_ADDITIONS, bic_select=BIC_SELECT, bic_min_drop=BIC_MIN_DROP,
-                   img_offset_max=IMG_OFFSET_MAX, mu_crit=MU_CRIT)
+                   img_offset_max=IMG_OFFSET_MAX, mu_crit=MU_CRIT, check="one-to-one, merging pairs",
+                   drop=list(DROP), auto_drop=AUTO_DROP, drop_frac=DROP_FRAC, max_drop_frac=MAX_DROP_FRAC)
 CHOICE_FILE = os.path.join(RUN_DIR, "model_choice.json")
-t0 = time.time()
-if MANUAL_MODEL or not AUTO_MODEL:
-    MODEL_CFG = merged(BASE_MODEL, MANUAL_MODEL)
-    print("mass model " + (f"forced by GLAFIC_MODEL = {FORCE_MODEL!r}" if FORCE_MODEL else
-                           "set by hand in CLUSTER_MODEL" if MANUAL_MODEL else "= base model (AUTO_MODEL off)"))
-elif os.path.exists(CHOICE_FILE) and json.load(open(CHOICE_FILE)).get("key") == json.loads(json.dumps(_search_key)):
-    MODEL_CFG = merged(BASE_MODEL, json.load(open(CHOICE_FILE))["model"])
-    print(f"mass model: {model_tag(MODEL_CFG)} (selected earlier; see {CHOICE_FILE})")
-else:
-    print("model selection (image check, then BIC):")
+
+
+def search():
+    # greedy model search on the current data (DROP).  Returns the selected setup, every setup fitted, and
+    # the first round (the base model and each single addition to it)
+    global SIGMA_REF
     _base = model_tag(BASE_MODEL)       # its calibrated σ is the common error for the BIC comparison
     SIGMA_REF = fit_setup(os.path.join(RUN_DIR, "model_search", _base), BASE_MODEL, _base)["sigma"]
-    cur = evaluate(BASE_MODEL); tried = [cur]
+    cur = evaluate(BASE_MODEL); tried = [cur]; first = None
     for _ in range(MAX_ADDITIONS):
         if cur["ok"] and not BIC_SELECT:
             break
         trials = [evaluate(merged(cur["cfg"], a)) for a in MODEL_CANDIDATES if merged(cur["cfg"], a) != cur["cfg"]]
         tried += trials
+        first = first or [tried[0]] + trials
         passing = [t for t in trials if t["ok"]]
         if not cur["ok"]:            # repair: the best passing candidate, else the closest one gets another component
             cur = min(passing, key=bic) if passing else min(trials, key=lambda t: (t["missing"], t["max_off"]))
@@ -595,10 +672,51 @@ else:
             if best is None or bic(best) > bic(cur) - BIC_MIN_DROP:
                 break
             cur = best
-    table = [dict(tag=t["tag"], ok=t["ok"], fails=t["fails"], chi2=t["calib"]["chi2_raw"], npar=t["calib"]["npar"],
-                  bic=bic(t)) for t in tried]
+    return cur, tried, first or tried
+
+
+def persistent(first):
+    # images that fail in at least DROP_FRAC of the first-round models: whatever component is added, the
+    # model cannot place them, so the image (identification, redshift, position) is at fault, not the model
+    count = {}
+    for e in first:
+        for iid in e["bad"]:
+            count[iid] = count.get(iid, 0) + 1
+    return count, sorted((i for i, k in count.items() if k >= DROP_FRAC * len(first)), key=_img_key)
+
+
+t0 = time.time()
+if MANUAL_MODEL or not AUTO_MODEL:
+    MODEL_CFG = merged(BASE_MODEL, MANUAL_MODEL)
+    print("mass model " + (f"forced by GLAFIC_MODEL = {FORCE_MODEL!r}" if FORCE_MODEL else
+                           "set by hand in CLUSTER_MODEL" if MANUAL_MODEL else "= base model (AUTO_MODEL off)"))
+elif os.path.exists(CHOICE_FILE) and json.load(open(CHOICE_FILE)).get("key") == json.loads(json.dumps(_search_key)):
+    _choice = json.load(open(CHOICE_FILE))
+    set_data(_choice.get("drop", DROP))
+    MODEL_CFG = merged(BASE_MODEL, _choice["model"])
+    print(f"mass model: {model_tag(MODEL_CFG)} (selected earlier; see {CHOICE_FILE})")
+else:
+    audit, table = [], []
+    while True:
+        print(f"model selection on {len(IMG_IDS)} images" + (f", without {', '.join(DROP)}" if DROP else "")
+              + " (image check, then BIC):")
+        cur, tried, first = search()
+        table += [dict(tag=t["tag"], drop=list(DROP), ok=t["ok"], fails=t["fails"], bad=t["bad"],
+                       chi2=t["calib"]["chi2_raw"], npar=t["calib"]["npar"], bic=bic(t)) for t in tried]
+        count, worst = persistent(first)
+        audit.append(dict(drop=list(DROP), n_models=len(first), fails=count, persistent=worst))
+        print(f"   failures per image in the {len(first)} first-round models: "
+              + (", ".join(f"{i}: {k}" for i, k in sorted(count.items(), key=lambda t: _img_key(t[0]))) or "none"))
+        if not (AUTO_DROP and not first[0]["ok"] and worst):
+            break                    # the base model passes, or the failures move between models
+        if len(DROP) + len(worst) > MAX_DROP_FRAC * N_IMG0:
+            print(f"   {', '.join(worst)} fail in >= {DROP_FRAC:.0%} of them, but leaving them out would drop more "
+                  f"than {MAX_DROP_FRAC:.0%} of the images: the mass model is at fault; none left out")
+            break
+        print(f"   {', '.join(worst)} fail in >= {DROP_FRAC:.0%} of them: left out, and the search repeated")
+        set_data(DROP + worst)
     json.dump(dict(key=_search_key, model=cur["cfg"] if cur["ok"] else None, tag=cur["tag"], ok=cur["ok"],
-                   candidates=table), open(CHOICE_FILE, "w"), indent=1)
+                   drop=list(DROP), audit=audit, candidates=table), open(CHOICE_FILE, "w"), indent=1)
     if not cur["ok"]:
         raise RuntimeError(f"{CLUSTER}: no model with up to {MAX_ADDITIONS} added components passes the image check "
                            f"(closest: {cur['tag']}: {'; '.join(cur['fails'])}). Set the model by hand in "
@@ -614,7 +732,8 @@ TAG = model_tag(MODEL_CFG)
 if _old_setup.get("tag", TAG) != TAG:      # one model setup per folder: never mix results of different setups
     raise ValueError(f"{RUN_DIR} holds results of model {_old_setup['tag']!r}, not {TAG!r}; move or rename it "
                      f"(e.g. to {RESULTS}_{_old_setup['tag']}) before running this setup")
-json.dump(dict(cluster=CLUSTER, tag=TAG, settings=SETTINGS_TAG, model=MODEL_CFG), open(SETUP_FILE, "w"))
+json.dump(dict(cluster=CLUSTER, tag=TAG, settings=SETTINGS_TAG, model=MODEL_CFG, drop=list(DROP)),
+          open(SETUP_FILE, "w"))
 print(f"model: {TAG}  ->  {RUN_DIR}")
 write_files(RUN_DIR, POS_ERR0)
 print(open(os.path.join(RUN_DIR, f"{CLUSTER}.input")).read().split("start_command")[0])

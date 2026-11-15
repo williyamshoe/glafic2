@@ -1,0 +1,152 @@
+{
+ "key": {
+  "settings": "speconly_autopar_nfwa7.5z1.52",
+  "candidates": [
+   {
+    "mpoles": [],
+    "bcg": false,
+    "shear": true,
+    "halo": "anfw"
+   },
+   {
+    "mpoles": [],
+    "bcg": true,
+    "shear": false,
+    "halo": "anfw"
+   },
+   {
+    "mpoles": [],
+    "bcg": false,
+    "shear": false,
+    "halo": "gnfw"
+   },
+   {
+    "mpoles": [
+     [
+      3,
+      2
+     ]
+    ],
+    "bcg": false,
+    "shear": false,
+    "halo": "anfw"
+   },
+   {
+    "mpoles": [
+     [
+      4,
+      2
+     ]
+    ],
+    "bcg": false,
+    "shear": false,
+    "halo": "anfw"
+   }
+  ],
+  "max_additions": 3,
+  "bic_select": true,
+  "bic_min_drop": 10.0,
+  "img_offset_max": 5.0,
+  "mu_crit": 1000.0
+ },
+ "model": {
+  "mpoles": [],
+  "bcg": false,
+  "shear": false,
+  "halo": "gnfw"
+ },
+ "tag": "base_speconly_noshear_gnfw_autopar_nfwa7.5z1.52",
+ "ok": true,
+ "candidates": [
+  {
+   "tag": "base_speconly_noshear_autopar_nfwa7.5z1.52",
+   "ok": false,
+   "fails": [
+    "missing images in system(s) 6",
+    "image 6.3 is 27.43\" from every predicted image (> 5\u03c3)",
+    "image 6.2 has |\u03bc| = 8780 (on a critical curve)"
+   ],
+   "chi2": 20.192507187346763,
+   "npar": 9,
+   "bic": 68.14420946540582
+  },
+  {
+   "tag": "base_speconly_autopar_nfwa7.5z1.52",
+   "ok": false,
+   "fails": [
+    "missing images in system(s) 3"
+   ],
+   "chi2": 18.90085018892904,
+   "npar": 11,
+   "bic": 74.41549679691366
+  },
+  {
+   "tag": "base_speconly_noshear_bcg_autopar_nfwa7.5z1.52",
+   "ok": true,
+   "fails": [],
+   "chi2": 9.49157128483568,
+   "npar": 11,
+   "bic": 59.970156091046555
+  },
+  {
+   "tag": "base_speconly_noshear_gnfw_autopar_nfwa7.5z1.52",
+   "ok": true,
+   "fails": [],
+   "chi2": 7.184250702599527,
+   "npar": 10,
+   "bic": 52.30077024679972
+  },
+  {
+   "tag": "base_speconly_noshear_mpole32_autopar_nfwa7.5z1.52",
+   "ok": true,
+   "fails": [],
+   "chi2": 17.484305440712177,
+   "npar": 11,
+   "bic": 72.2407848214617
+  },
+  {
+   "tag": "base_speconly_noshear_mpole42_autopar_nfwa7.5z1.52",
+   "ok": false,
+   "fails": [
+    "missing images in system(s) 6",
+    "image 6.3 is 27.48\" from every predicted image (> 5\u03c3)",
+    "image 6.2 has |\u03bc| = 1432 (on a critical curve)"
+   ],
+   "chi2": 18.762565965275734,
+   "npar": 11,
+   "bic": 74.20319968623397
+  },
+  {
+   "tag": "base_speconly_gnfw_autopar_nfwa7.5z1.52",
+   "ok": true,
+   "fails": [],
+   "chi2": 5.872256184783192,
+   "npar": 12,
+   "bic": 58.540834952236025
+  },
+  {
+   "tag": "base_speconly_noshear_bcg_gnfw_autopar_nfwa7.5z1.52",
+   "ok": true,
+   "fails": [],
+   "chi2": 6.890866024605323,
+   "npar": 12,
+   "bic": 60.10462813262291
+  },
+  {
+   "tag": "base_speconly_noshear_mpole32_gnfw_autopar_nfwa7.5z1.52",
+   "ok": true,
+   "fails": [],
+   "chi2": 7.177160196189013,
+   "npar": 12,
+   "bic": 60.5441535088801
+  },
+  {
+   "tag": "base_speconly_noshear_mpole42_gnfw_autopar_nfwa7.5z1.52",
+   "ok": true,
+   "fails": [],
+   "chi2": 5.845786469256998,
+   "npar": 12,
+   "bic": 58.50019803807283
+  }
+ ]
+}

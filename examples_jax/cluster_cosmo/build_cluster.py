@@ -198,14 +198,16 @@ def _system_id(s):
     return int(sid) if sid.isdigit() else sid
 
 
-def load(name, zl=None, data=DATA, spec_only=False):
+def load(name, zl=None, data=DATA, spec_only=False, drop_images=()):
     """Read a cluster.  Returns a dict with
     name, zl, center (RA, Dec of the BCG), gals (N x 5: x, y, L, e, PA; BCG first),
     systems (OrderedDict id -> {zs, zerr, err, errs, ids, xy}), ref (readme info), files,
-    dropped (IDs of the systems left out).
+    dropped (IDs of the systems left out), dropped_images (IDs of the images left out).
 
     spec_only: keep only spectroscopically confirmed systems (z_s >= 0 with error 0);
-               drops photometric systems and those without a redshift (z_s = -1)."""
+               drops photometric systems and those without a redshift (z_s = -1).
+    drop_images: image IDs to leave out (e.g. images flagged as problematic); a system left
+               with a single image is left out as a whole."""
     files = find_files(name, data)
     ref = read_readme(files["readme"])
     zl = ref.get("zl") if zl is None else zl
@@ -234,6 +236,17 @@ def load(name, zl=None, data=DATA, spec_only=False):
     dropped = [sid for sid, s in systems.items() if spec_only and (s["zerr"] != 0 or s["zs"] < 0)]
     for sid in dropped:
         del systems[sid]
+    drop_images = {str(i) for i in drop_images}
+    unknown = drop_images - {iid for s in systems.values() for iid in s["ids"]}
+    if unknown:
+        raise ValueError(f"{name}: drop_images refers to images not in the fit: {sorted(unknown)}")
+    for sid, s in list(systems.items()):
+        keep = [j for j, iid in enumerate(s["ids"]) if iid not in drop_images]
+        for k in ("errs", "ids", "xy"):
+            s[k] = [s[k][j] for j in keep]
+        if len(keep) < 2:                              # a lone image constrains nothing
+            del systems[sid]
+            dropped.append(sid)
     if not systems:
         raise ValueError(f"{name}: no spectroscopically confirmed systems")
     for sid, s in systems.items():
@@ -242,7 +255,8 @@ def load(name, zl=None, data=DATA, spec_only=False):
         if s["zs"] <= zl:
             raise ValueError(f"{name}: system {sid} has z_s = {s['zs']} <= z_l = {zl}")
     return dict(name=os.path.basename(os.path.normpath(name)), zl=float(zl), center=(ra0, dec0),
-                gals=gals, systems=systems, ref=ref, files=files, dropped=dropped)
+                gals=gals, systems=systems, ref=ref, files=files, dropped=dropped,
+                dropped_images=sorted(drop_images))
 
 
 def summary(c):
@@ -256,14 +270,17 @@ def summary(c):
            f"{min(zs):.2f} < z_s < {max(zs):.2f} ({nphot} photometric); {len(c['gals'])} members; "
            f"images at {r.min():.1f}-{r.max():.1f}\" from the BCG")
     if c.get("dropped"):
-        txt += f"; left out (no spectroscopic z): systems {', '.join(map(str, c['dropped']))}"
+        txt += f"; left out: systems {', '.join(map(str, c['dropped']))}"
+    if c.get("dropped_images"):
+        txt += f"; left out: images {', '.join(c['dropped_images'])}"
     if "chi2" in c["ref"]:
         txt += f"; published fit chi2 = {c['ref']['chi2']:.2f} for {c['ref']['dof']:.0f} dof"
     return txt
 
 
 def write_all(name, outdir=HERE, prefix=None, zl=None, bcg=False, mpoles=(), shear=True, eta_free=True,
-              pos_err=None, parity=None, fov=None, spec_only=False, halo="anfw", data=DATA):
+              pos_err=None, parity=None, fov=None, spec_only=False, halo="anfw", data=DATA,
+              drop_images=()):
     """Write the glafic files for cluster ``name``.  Defaults follow the glafic
     recipe of Oguri et al. (VENUS, 2026, Sec. 2.3): elliptical NFW halo (all 6
     parameters free, 1 < c < 40, e < 0.8), pseudo-Jaffe members with
@@ -285,6 +302,7 @@ def write_all(name, outdir=HERE, prefix=None, zl=None, bcg=False, mpoles=(), she
              a critical curve.  glafic gives a wrong parity a chi^2 of
              chi2pen_parity (a hard wall); other images stay unconstrained.
     spec_only: leave out systems with photometric redshifts (see :func:`load`).
+    drop_images: image IDs to leave out (see :func:`load`).
     halo   : 'anfw' (elliptical NFW, the recipe) or 'gnfw' (generalized NFW,
              density ~ r^-gamma inside the scale radius, with the inner slope
              gamma free in [0.05, 1.95]; gamma = 1 is NFW).
@@ -293,7 +311,7 @@ def write_all(name, outdir=HERE, prefix=None, zl=None, bcg=False, mpoles=(), she
     """
     if halo not in ("anfw", "gnfw"):
         raise ValueError(f"halo must be 'anfw' or 'gnfw', not {halo!r}")
-    c = load(name, zl=zl, data=data, spec_only=spec_only)
+    c = load(name, zl=zl, data=data, spec_only=spec_only, drop_images=drop_images)
     parity = {str(k): int(v) for k, v in (parity or {}).items()}
     known = {iid for s in c["systems"].values() for iid in s["ids"]}
     if set(parity) - known:

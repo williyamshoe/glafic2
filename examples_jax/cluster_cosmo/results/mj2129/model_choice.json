@@ -1,0 +1,185 @@
+{
+ "key": {
+  "settings": "speconly_autopar_nfwa21z2.24",
+  "candidates": [
+   {
+    "mpoles": [],
+    "bcg": false,
+    "shear": true,
+    "halo": "anfw"
+   },
+   {
+    "mpoles": [],
+    "bcg": true,
+    "shear": false,
+    "halo": "anfw"
+   },
+   {
+    "mpoles": [],
+    "bcg": false,
+    "shear": false,
+    "halo": "gnfw"
+   },
+   {
+    "mpoles": [
+     [
+      3,
+      2
+     ]
+    ],
+    "bcg": false,
+    "shear": false,
+    "halo": "anfw"
+   },
+   {
+    "mpoles": [
+     [
+      4,
+      2
+     ]
+    ],
+    "bcg": false,
+    "shear": false,
+    "halo": "anfw"
+   }
+  ],
+  "max_additions": 3,
+  "bic_select": true,
+  "bic_min_drop": 10.0,
+  "img_offset_max": 5.0,
+  "mu_crit": 1000.0
+ },
+ "model": {
+  "mpoles": [
+   [
+    4,
+    2
+   ]
+  ],
+  "bcg": false,
+  "shear": false,
+  "halo": "gnfw"
+ },
+ "tag": "base_speconly_noshear_mpole42_gnfw_autopar_nfwa21z2.24",
+ "ok": true,
+ "candidates": [
+  {
+   "tag": "base_speconly_noshear_autopar_nfwa21z2.24",
+   "ok": false,
+   "fails": [
+    "missing images in system(s) 4"
+   ],
+   "chi2": 292.1347322029871,
+   "npar": 9,
+   "bic": 86.43823971206491
+  },
+  {
+   "tag": "base_speconly_autopar_nfwa21z2.24",
+   "ok": false,
+   "fails": [
+    "missing images in system(s) 4"
+   ],
+   "chi2": 197.4007903675091,
+   "npar": 11,
+   "bic": 79.96105400687784
+  },
+  {
+   "tag": "base_speconly_noshear_bcg_autopar_nfwa21z2.24",
+   "ok": false,
+   "fails": [
+    "image 10.3 is 5.41\" from every predicted image (> 5\u03c3)"
+   ],
+   "chi2": 280.60620422974716,
+   "npar": 11,
+   "bic": 93.34752956230035
+  },
+  {
+   "tag": "base_speconly_noshear_gnfw_autopar_nfwa21z2.24",
+   "ok": false,
+   "fails": [
+    "image 10.3 is 5.23\" from every predicted image (> 5\u03c3)"
+   ],
+   "chi2": 218.10286267207562,
+   "npar": 10,
+   "bic": 78.90967344423126
+  },
+  {
+   "tag": "base_speconly_noshear_mpole32_autopar_nfwa21z2.24",
+   "ok": false,
+   "fails": [
+    "image 10.3 is 4.36\" from every predicted image (> 5\u03c3)"
+   ],
+   "chi2": 203.34279274702195,
+   "npar": 11,
+   "bic": 80.91703109912942
+  },
+  {
+   "tag": "base_speconly_noshear_mpole42_autopar_nfwa21z2.24",
+   "ok": false,
+   "fails": [
+    "image 8.2 has |\u03bc| = 2216 (on a critical curve)"
+   ],
+   "chi2": 272.4541601279183,
+   "npar": 11,
+   "bic": 92.03599063676195
+  },
+  {
+   "tag": "base_speconly_mpole42_autopar_nfwa21z2.24",
+   "ok": true,
+   "fails": [],
+   "chi2": 161.0419084923462,
+   "npar": 13,
+   "bic": 82.8755205624306
+  },
+  {
+   "tag": "base_speconly_noshear_mpole42_bcg_autopar_nfwa21z2.24",
+   "ok": true,
+   "fails": [],
+   "chi2": 236.74673812000074,
+   "npar": 13,
+   "bic": 95.05526709810589
+  },
+  {
+   "tag": "base_speconly_noshear_mpole42_gnfw_autopar_nfwa21z2.24",
+   "ok": true,
+   "fails": [],
+   "chi2": 173.4282833256039,
+   "npar": 12,
+   "bic": 80.4862717558946
+  },
+  {
+   "tag": "base_speconly_noshear_mpole42_mpole32_autopar_nfwa21z2.24",
+   "ok": true,
+   "fails": [],
+   "chi2": 153.38147927536045,
+   "npar": 13,
+   "bic": 81.64307493543079
+  },
+  {
+   "tag": "base_speconly_mpole42_gnfw_autopar_nfwa21z2.24",
+   "ok": false,
+   "fails": [
+    "missing images in system(s) 4"
+   ],
+   "chi2": 121.02277457884674,
+   "npar": 14,
+   "bic": 80.81908204182966
+  },
+  {
+   "tag": "base_speconly_noshear_mpole42_bcg_gnfw_autopar_nfwa21z2.24",
+   "ok": true,
+   "fails": [],
+   "chi2": 165.9848221285459,
+   "npar": 14,
+   "bic": 88.05278622653958
+  },
+  {
+   "tag": "base_speconly_noshear_mpole42_mpole32_gnfw_autopar_nfwa21z2.24",
+   "ok": true,
+   "fails": [],
+   "chi2": 86.84690688647323,
+   "npar": 14,
+   "bic": 75.32070884454254
+  }
+ ]
+}

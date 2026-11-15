@@ -3,6 +3,24 @@
   "settings": "speconly_autopar_nfwa32.5z3.12",
   "candidates": [
    {
+    "mpoles": [],
+    "bcg": false,
+    "shear": true,
+    "halo": "anfw"
+   },
+   {
+    "mpoles": [],
+    "bcg": true,
+    "shear": false,
+    "halo": "anfw"
+   },
+   {
+    "mpoles": [],
+    "bcg": false,
+    "shear": false,
+    "halo": "gnfw"
+   },
+   {
     "mpoles": [
      [
       3,
@@ -25,28 +43,105 @@
     "halo": "anfw"
    }
   ],
-  "max_additions": 2,
-  "bic_select": false,
+  "max_additions": 3,
+  "bic_select": true,
   "bic_min_drop": 10.0,
   "img_offset_max": 5.0,
   "mu_crit": 1000.0
  },
  "model": {
-  "mpoles": [],
+  "mpoles": [
+   [
+    4,
+    2
+   ]
+  ],
   "bcg": false,
   "shear": false,
   "halo": "anfw"
  },
- "tag": "base_speconly_noshear_autopar_nfwa32.5z3.12",
+ "tag": "base_speconly_noshear_mpole42_autopar_nfwa32.5z3.12",
  "ok": true,
  "candidates": [
   {
    "tag": "base_speconly_noshear_autopar_nfwa32.5z3.12",
    "ok": true,
    "fails": [],
-   "chi2": 202.02838402991847,
+   "chi2": 202.0283536107799,
    "npar": 9,
    "bic": 136.33257342172263
+  },
+  {
+   "tag": "base_speconly_autopar_nfwa32.5z3.12",
+   "ok": true,
+   "fails": [],
+   "chi2": 158.6212113509917,
+   "npar": 11,
+   "bic": 126.85452032444573
+  },
+  {
+   "tag": "base_speconly_noshear_bcg_autopar_nfwa32.5z3.12",
+   "ok": true,
+   "fails": [],
+   "chi2": 195.7314403438568,
+   "npar": 11,
+   "bic": 143.57014849244428
+  },
+  {
+   "tag": "base_speconly_noshear_gnfw_autopar_nfwa32.5z3.12",
+   "ok": true,
+   "fails": [],
+   "chi2": 170.18008839330736,
+   "npar": 10,
+   "bic": 127.02405380208596
+  },
+  {
+   "tag": "base_speconly_noshear_mpole32_autopar_nfwa32.5z3.12",
+   "ok": true,
+   "fails": [],
+   "chi2": 181.87475025634598,
+   "npar": 11,
+   "bic": 137.32865428914647
+  },
+  {
+   "tag": "base_speconly_noshear_mpole42_autopar_nfwa32.5z3.12",
+   "ok": true,
+   "fails": [],
+   "chi2": 131.18961449387328,
+   "npar": 11,
+   "bic": 114.4984560919618
+  },
+  {
+   "tag": "base_speconly_mpole42_autopar_nfwa32.5z3.12",
+   "ok": true,
+   "fails": [],
+   "chi2": 122.38169615760017,
+   "npar": 13,
+   "bic": 120.60499456694363
+  },
+  {
+   "tag": "base_speconly_noshear_mpole42_bcg_autopar_nfwa32.5z3.12",
+   "ok": true,
+   "fails": [],
+   "chi2": 130.71578291337522,
+   "npar": 13,
+   "bic": 124.35893247328642
+  },
+  {
+   "tag": "base_speconly_noshear_mpole42_gnfw_autopar_nfwa32.5z3.12",
+   "ok": true,
+   "fails": [],
+   "chi2": 127.89731205841993,
+   "npar": 12,
+   "bic": 118.05245090022612
+  },
+  {
+   "tag": "base_speconly_noshear_mpole42_mpole32_autopar_nfwa32.5z3.12",
+   "ok": true,
+   "fails": [],
+   "chi2": 109.60362187204277,
+   "npar": 13,
+   "bic": 114.84934324769397
   }
  ]
 }

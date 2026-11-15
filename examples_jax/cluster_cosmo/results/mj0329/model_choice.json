@@ -3,6 +3,24 @@
   "settings": "speconly_autopar_nfwa19.5z4.21",
   "candidates": [
    {
+    "mpoles": [],
+    "bcg": false,
+    "shear": true,
+    "halo": "anfw"
+   },
+   {
+    "mpoles": [],
+    "bcg": true,
+    "shear": false,
+    "halo": "anfw"
+   },
+   {
+    "mpoles": [],
+    "bcg": false,
+    "shear": false,
+    "halo": "gnfw"
+   },
+   {
     "mpoles": [
      [
       3,
@@ -25,8 +43,8 @@
     "halo": "anfw"
    }
   ],
-  "max_additions": 2,
-  "bic_select": false,
+  "max_additions": 3,
+  "bic_select": true,
   "bic_min_drop": 10.0,
   "img_offset_max": 5.0,
   "mu_crit": 1000.0
@@ -44,9 +62,59 @@
    "tag": "base_speconly_noshear_autopar_nfwa19.5z4.21",
    "ok": true,
    "fails": [],
-   "chi2": 163.0182598941651,
+   "chi2": 163.0182604667595,
    "npar": 9,
-   "bic": 56.20820704885331
+   "bic": 56.20820704885332
+  },
+  {
+   "tag": "base_speconly_autopar_nfwa19.5z4.21",
+   "ok": false,
+   "fails": [
+    "image 10.2 is 6.59\" from every predicted image (> 5\u03c3)"
+   ],
+   "chi2": 122.56663912301671,
+   "npar": 11,
+   "bic": 58.82127825365827
+  },
+  {
+   "tag": "base_speconly_noshear_bcg_autopar_nfwa19.5z4.21",
+   "ok": false,
+   "fails": [
+    "image 10.2 is 7.36\" from every predicted image (> 5\u03c3)"
+   ],
+   "chi2": 154.19251947470826,
+   "npar": 11,
+   "bic": 62.89532177175204
+  },
+  {
+   "tag": "base_speconly_noshear_gnfw_autopar_nfwa19.5z4.21",
+   "ok": false,
+   "fails": [
+    "image 10.2 is 7.35\" from every predicted image (> 5\u03c3)"
+   ],
+   "chi2": 153.28536146177206,
+   "npar": 10,
+   "bic": 58.866438739618204
+  },
+  {
+   "tag": "base_speconly_noshear_mpole32_autopar_nfwa19.5z4.21",
+   "ok": false,
+   "fails": [
+    "image 10.2 is 6.76\" from every predicted image (> 5\u03c3)"
+   ],
+   "chi2": 154.02047670880225,
+   "npar": 11,
+   "bic": 62.873159235643
+  },
+  {
+   "tag": "base_speconly_noshear_mpole42_autopar_nfwa19.5z4.21",
+   "ok": false,
+   "fails": [
+    "image 10.2 is 6.68\" from every predicted image (> 5\u03c3)"
+   ],
+   "chi2": 148.78083298976102,
+   "npar": 11,
+   "bic": 62.19818872752436
   }
  ]
 }

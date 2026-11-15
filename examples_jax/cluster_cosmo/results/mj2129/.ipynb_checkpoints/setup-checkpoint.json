@@ -1,0 +1,1 @@
+{"cluster": "mj2129", "tag": "base_speconly_noshear_mpole42_gnfw_autopar_nfwa21z2.24", "settings": "speconly_autopar_nfwa21z2.24", "model": {"mpoles": [[4, 2]], "bcg": false, "shear": false, "halo": "gnfw"}}

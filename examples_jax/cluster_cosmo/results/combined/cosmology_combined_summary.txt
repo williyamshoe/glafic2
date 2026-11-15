@@ -1,0 +1,52 @@
+Strong lensing: 5 clusters (rj2129, as1063, mj1931, mj0329, mj2129)
+SN: Pantheon+ (z_HD > 0.01, M marginalised); CMB: Planck 2018 distance priors (Chen+2019)
+
+flat ΛCDM                          Ω_m     δ
+--------------------------------------------
+SL                 0.225 +0.100 -0.080      
+SN                 0.332 +0.018 -0.018      
+CMB                0.317 +0.008 -0.008      
+SL×SN              0.329 +0.017 -0.017  1.04
+SL×CMB             0.316 +0.008 -0.009  0.99
+CMB×SN             0.319 +0.008 -0.008      
+SL×CMB×SN          0.319 +0.008 -0.008  1.00
+
+flat wCDM                          Ω_m     δ                  w0 (w)     δ
+--------------------------------------------------------------------------
+SL                 0.308 +0.096 -0.135          -1.301 +0.389 -1.194      
+SN                 0.289 +0.067 -0.079          -0.894 +0.140 -0.166      
+CMB                0.309 +0.250 -0.109          -1.031 +0.647 -0.512      
+SL×SN              0.286 +0.057 -0.067  1.17    -0.895 +0.118 -0.138  1.20
+SL×CMB             0.279 +0.036 -0.032  5.22    -1.142 +0.139 -0.144  4.10
+CMB×SN             0.324 +0.009 -0.009          -0.974 +0.029 -0.029      
+SL×CMB×SN          0.322 +0.009 -0.009  1.02    -0.980 +0.029 -0.028  1.03
+
+flat w0waCDM                       Ω_m     δ                  w0 (w)     δ                      wa     δ
+--------------------------------------------------------------------------------------------------------
+SL                 0.366 +0.077 -0.087          -1.970 +0.954 -0.750          -0.686 +1.719 -1.780      
+SN                 0.337 +0.072 -0.109          -0.916 +0.134 -0.157          -0.424 +0.880 -1.433      
+CMB                0.284 +0.245 -0.107          -0.902 +0.945 -0.705          -1.143 +1.642 -1.272      
+SL×SN              0.306 +0.080 -0.100  1.01    -0.897 +0.120 -0.146  1.10    -0.096 +0.738 -1.297  1.14
+SL×CMB             0.306 +0.043 -0.041  4.19    -0.969 +0.410 -0.438  1.94    -0.344 +1.388 -1.377  1.05
+CMB×SN             0.318 +0.014 -0.012          -0.911 +0.106 -0.104          -0.333 +0.509 -0.544      
+SL×CMB×SN          0.316 +0.015 -0.012  0.98    -0.885 +0.104 -0.135  0.88    -0.474 +0.683 -0.518  0.88
+
+How each combination was sampled:
+  flat ΛCDM      SN         NUTS:    51 s, divergences 0, max R-hat 1.000, min ESS 3630
+  flat ΛCDM      CMB        NUTS:     4 s, divergences 0, max R-hat 1.000, min ESS 6227
+  flat ΛCDM      SL+SN      SN chain reweighted by SL (weight ESS 9769)
+  flat ΛCDM      SL+CMB     CMB chain reweighted by SL (weight ESS 9968)
+  flat ΛCDM      CMB+SN     NUTS:   141 s, divergences 0, max R-hat 1.000, min ESS 6341
+  flat ΛCDM      SL+CMB+SN  CMB+SN chain reweighted by SL (weight ESS 9972)
+  flat wCDM      SN         NUTS:   130 s, divergences 0, max R-hat 1.004, min ESS 1143
+  flat wCDM      CMB        NUTS:   225 s, divergences 76, max R-hat 1.037, min ESS 104
+  flat wCDM      SL+SN      SN chain reweighted by SL (weight ESS 9009)
+  flat wCDM      SL+CMB     CMB chain reweighted by SL (weight ESS 3298)
+  flat wCDM      CMB+SN     NUTS:   184 s, divergences 0, max R-hat 1.001, min ESS 7063
+  flat wCDM      SL+CMB+SN  CMB+SN chain reweighted by SL (weight ESS 9578)
+  flat w0waCDM   SN         NUTS:   303 s, divergences 0, max R-hat 1.002, min ESS 1087
+  flat w0waCDM   CMB        NUTS:   311 s, divergences 67, max R-hat 1.002, min ESS 590
+  flat w0waCDM   SL+SN      SN chain reweighted by SL (weight ESS 7831)
+  flat w0waCDM   SL+CMB     CMB chain reweighted by SL (weight ESS 2350)
+  flat w0waCDM   CMB+SN     NUTS:   447 s, divergences 83, max R-hat 1.002, min ESS 1679
+  flat w0waCDM   SL+CMB+SN  CMB+SN chain reweighted by SL (weight ESS 9100)

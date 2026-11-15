@@ -1,0 +1,16 @@
+{
+ "clusters": [
+  "rj2129",
+  "as1063",
+  "mj1931",
+  "mj0329",
+  "mj2129"
+ ],
+ "tags": {
+  "rj2129": "base_speconly_noshear_gnfw_autopar_nfwa7.5z1.52",
+  "as1063": "base_speconly_noshear_mpole42_autopar_nfwa32.5z3.12",
+  "mj1931": "base_speconly_noshear_autopar_nfwa21z4.37",
+  "mj0329": "base_speconly_noshear_autopar_nfwa19.5z4.21",
+  "mj2129": "base_speconly_noshear_mpole42_gnfw_autopar_nfwa21z2.24"
+ }
+}
