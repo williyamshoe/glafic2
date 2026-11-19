@@ -20,7 +20,14 @@ A cluster that fails (for example the results-folder guard, or a model that
 fails the image check) is logged and skipped; the others still run.  Re-running
 is cheap for finished clusters: every stage loads its cached result, and the
 samplers resume from their checkpoints, so the script can be restarted after a
-batch-job time limit.  Progress goes to results/run_caminha.log.
+batch-job time limit.
+
+Progress goes to results/run_caminha.log, in detail: the node, batch job and
+GPUs; for each cluster, the start of every notebook cell (with its section
+heading), every line the notebook prints as it appears (model search, MAP runs,
+NUTS checkpoints and R-hat checks, ...), errors, and each cell's run time.
+Each line is tagged with the cluster; the same lines also go to the cluster's
+own results/<cluster>/run.log.
 
 On NERSC, run it inside a batch job from this folder, in the environment that
 has glafic_jax and JAX (its 'python3' kernel is used), e.g.
@@ -57,10 +64,99 @@ def caminha_clusters():
 
 
 def log(msg, logfile):
-    line = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}"
-    print(line, flush=True)
-    with open(logfile, "a") as f:
-        f.write(line + "\n")
+    """Timestamped message to stdout and to logfile (a path or a list of paths)."""
+    stamp = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] "
+    text = "\n".join(stamp + ln for ln in str(msg).splitlines() or [""])
+    print(text, flush=True)
+    for path in [logfile] if isinstance(logfile, str) else logfile:
+        with open(path, "a") as f:
+            f.write(text + "\n")
+
+
+def log_environment(logfile):
+    """Where the run happens: host, batch job, Python, visible GPUs."""
+    import platform
+    import shutil
+    import subprocess
+    lines = [f"host {platform.node()}; python {sys.version.split()[0]} ({sys.executable})"]
+    job = {k: os.environ[k] for k in ("SLURM_JOB_ID", "SLURM_JOB_NAME", "SLURM_NODELIST", "SLURM_GPUS_ON_NODE",
+                                      "CUDA_VISIBLE_DEVICES") if k in os.environ}
+    if job:
+        lines.append("job: " + ", ".join(f"{k}={v}" for k, v in job.items()))
+    if shutil.which("nvidia-smi"):
+        try:
+            gpus = subprocess.run(["nvidia-smi", "-L"], capture_output=True, text=True, timeout=30).stdout.strip()
+            lines += [f"gpu: {g}" for g in gpus.splitlines()] or ["gpu: none listed by nvidia-smi"]
+        except Exception as err:
+            lines.append(f"gpu: nvidia-smi failed ({err})")
+    else:
+        lines.append("gpu: no nvidia-smi on this node")
+    log("\n".join(lines), logfile)
+
+
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+
+class LoggingClient(NotebookClient):
+    """NotebookClient that logs the notebook as it runs: the start of every cell (with its section heading),
+    every line the cell prints (stdout and stderr, as it appears), errors, and each cell's run time.
+    Progress bars are logged once, as their last state."""
+
+    def __init__(self, nb, cluster, logfile, **kw):
+        super().__init__(nb, on_cell_execute=self._cell_start, on_cell_executed=self._cell_done, **kw)
+        self.cluster, self.logfile = cluster, logfile
+        self._buf, self._t0 = {}, {}
+        code = [i for i, c in enumerate(nb.cells) if c.cell_type == "code"]
+        self._ncode, self._code_no, self._section = len(code), {i: k + 1 for k, i in enumerate(code)}, {}
+        heading = ""
+        for i, c in enumerate(nb.cells):
+            if c.cell_type == "markdown":
+                heads = [ln.lstrip("#").strip() for ln in c.source.splitlines() if ln.startswith("#")]
+                heading = heads[0] if heads else heading
+            self._section[i] = heading
+
+    def _log(self, msg):
+        log("\n".join(f"{self.cluster} | {ln}" for ln in str(msg).splitlines()), self.logfile)
+
+    def _cell_start(self, cell, cell_index, **kw):
+        self._t0[cell_index] = time.time()
+        first = next((ln.strip() for ln in cell.source.splitlines() if ln.strip()), "")
+        self._log(f"--- cell {self._code_no.get(cell_index, '?')}/{self._ncode}"
+                  + (f" [{self._section.get(cell_index)}]" if self._section.get(cell_index) else "")
+                  + f": {first[:100]}")
+
+    def _cell_done(self, cell, cell_index, **kw):
+        self._flush()
+        dt = time.time() - self._t0.pop(cell_index, time.time())
+        self._log(f"--- cell {self._code_no.get(cell_index, '?')}/{self._ncode} finished in "
+                  + (f"{dt / 60:.1f} min" if dt >= 120 else f"{dt:.1f} s"))
+
+    def _stream(self, name, text):
+        buf = self._buf.get(name, "") + text
+        *lines, rest = buf.split("\n")
+        for ln in lines:
+            ln = _ANSI.sub("", ln.rsplit("\r", 1)[-1]).rstrip()   # a progress bar: its last state only
+            if ln:
+                self._log(ln if name == "stdout" else f"[{name}] {ln}")
+        self._buf[name] = rest[rest.rfind("\r"):] if "\r" in rest else rest
+
+    def _flush(self):
+        for name in list(self._buf):
+            if self._buf[name].strip("\r"):
+                self._stream(name, "\n")
+        self._buf.clear()
+
+    def process_message(self, msg, cell, cell_index):
+        try:
+            kind, content = msg["msg_type"], msg.get("content", {})
+            if kind == "stream":
+                self._stream(content.get("name", "stdout"), content.get("text", ""))
+            elif kind == "error":
+                self._flush()
+                self._log(f"ERROR {content.get('ename')}: {_ANSI.sub('', str(content.get('evalue')))}")
+        except Exception:                               # logging must never break the run
+            pass
+        return super().process_message(msg, cell, cell_index)
 
 
 def run_one(cluster, notebook, results, smoke, logfile, model=""):
@@ -78,8 +174,9 @@ def run_one(cluster, notebook, results, smoke, logfile, model=""):
     out = os.path.join(outdir, notebook.replace(".ipynb", ".executed.ipynb"))
     os.environ["GLAFIC_CLUSTER"] = cluster              # the kernel inherits it
     os.environ["GLAFIC_MODEL"] = model                  # '' = automatic model choice
-    client = NotebookClient(nb, timeout=None, kernel_name="python3",
-                            resources={"metadata": {"path": HERE}})
+    logfile = [logfile, os.path.join(outdir, "run.log")]   # the cluster's own log, next to its results
+    client = LoggingClient(nb, cluster, logfile, timeout=None, kernel_name="python3",
+                           resources={"metadata": {"path": HERE}})
     t0 = time.time()
     try:
         client.execute()
@@ -132,6 +229,7 @@ def main():
 
     log(f"start: {a.notebook} for {', '.join(clusters)}" + (f" with mass model {a.model}" if a.model else "")
         + (" (SMOKE_TEST)" if a.smoke else ""), logfile)
+    log_environment(logfile)
     status = {}
     for c in clusters:
         log(f"{c}: starting", logfile)
