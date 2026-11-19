@@ -197,10 +197,11 @@ file also records its cluster and model tag.
 
 `MODELS` in the next cell picks which cosmologies to sample, for example one
 per batch job; with `MODELS = []` only stage A runs. The samplers write
-a checkpoint every `chunk` (100) samples, so a job that hits its time limit
-resumes where it stopped. After every chunk the largest split R-hat over all
-parameters is computed from all samples so far, and NUTS stops once it is
-below `rhat_target` (1.01); `num_samples` is only the upper limit. Set
+a checkpoint every `chunk` (200) samples, so a job that hits its time limit
+resumes where it stopped. After the first `min_samples` (1000) samples, and
+then after every chunk, the largest split R-hat over all parameters is
+computed from all samples so far, and NUTS stops once it is below
+`rhat_target` (1.01); `num_samples` (5000) is only the upper limit. Set
 `rhat_target=None` in `NUTS_KW` to always draw `num_samples`.
 """)
 
@@ -266,14 +267,16 @@ COSMO_REPARAM = {"wa": ("sum_below", "weos", -3.0, 2.0, 0.0)}   # DESI: wa in [-
 W_PRIOR = "desi"                  # tag of the w0/wa prior in the chain file names (w0 in [-3, 1]: prior file)
 W_MAX_WCDM = 0.0                  # wCDM: w < W_MAX_WCDM, the w0waCDM cut w0 + wa < 0 at wa = 0 (None: prior file)
 NUTS_KW = dict(num_chains=4, num_warmup=1000, num_samples=5000, target_accept=0.95,
-               max_tree_depth=10, init="map", init_jitter=0.01, use_approx_mass=False, chunk=100,
-               rhat_target=1.01)   # sample in chunks of 100 until max R-hat < 1.01 (num_samples: the cap)
+               max_tree_depth=10, init="map", init_jitter=0.01, use_approx_mass=False, chunk=200,
+               rhat_target=1.01, min_samples=1000)
+# NUTS draws min_samples, then checks R-hat every chunk samples and stops once max R-hat < rhat_target
+# (num_samples: the cap)
 MODELS = ["lcdm", "wcdm", "w0wa"]   # cosmologies to sample in stage B (finished ones are loaded from disk)
 SMOKE_TEST = False                # tiny runs, to check that the notebook works end to end
 
 RESULTS = os.path.join(HERE, "results_smoke" if SMOKE_TEST else "results", build.results_name(CLUSTER, FORCE_MODEL))
 if SMOKE_TEST:
-    NUTS_KW.update(num_chains=2, num_warmup=20, num_samples=20, chunk=10, max_tree_depth=5)
+    NUTS_KW.update(num_chains=2, num_warmup=20, num_samples=20, chunk=10, min_samples=10, max_tree_depth=5)
 """)
 
 md("## 1. Data")
