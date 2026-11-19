@@ -121,9 +121,12 @@ m = 3 multipole, but it puts image 6.2 on a critical curve and loses two images
 of system 6. Setting `mpoles`, `bcg`, `shear` or `halo` for a cluster in
 `CLUSTER_MODEL` fixes its model by hand and skips the search.
 
-The candidates are external shear (`shear=True`), a separate BCG
-(`bcg=True`), a generalized NFW halo with a free inner slope (`halo="gnfw"`)
-and the m = 3 and m = 4 multipoles. Why not multipoles only: a mass model
+The candidates are a separate BCG (`bcg=True`), a generalized NFW halo with
+a free inner slope (`halo="gnfw"`) and the m = 3 and m = 4 multipoles.
+External shear is not a candidate: the cluster's own mass dominates the
+lensing, so a shear term adds little and mostly brings the γ = 0 funnel
+described above (set `shear=True` in `CLUSTER_MODEL` or `GLAFIC_MODEL` to
+include it by hand). Why not multipoles only: a mass model
 that is too rigid biases the cosmology. Ω_m (or w) then absorbs part of the
 misfit, because the distance ratios between source planes are the model's
 only other freedom in the radial direction. For RXJ2129 with the m = 3
@@ -194,8 +197,11 @@ file also records its cluster and model tag.
 
 `MODELS` in the next cell picks which cosmologies to sample, for example one
 per batch job; with `MODELS = []` only stage A runs. The samplers write
-a checkpoint every `chunk` samples, so a job that hits its time limit resumes
-where it stopped.
+a checkpoint every `chunk` (100) samples, so a job that hits its time limit
+resumes where it stopped. After every chunk the largest split R-hat over all
+parameters is computed from all samples so far, and NUTS stops once it is
+below `rhat_target` (1.01); `num_samples` is only the upper limit. Set
+`rhat_target=None` in `NUTS_KW` to always draw `num_samples`.
 """)
 
 code(r"""
@@ -231,8 +237,8 @@ FORCE_MODEL = os.environ.get("GLAFIC_MODEL", "").strip()
 if FORCE_MODEL:
     MANUAL_MODEL = build.parse_model(FORCE_MODEL)[0]
 AUTO_MODEL = True                 # without a manual model: add components when the base model fails the image check
-MODEL_CANDIDATES = [dict(shear=True), dict(bcg=True), dict(halo="gnfw"),
-                    dict(mpoles=[(3, 2)]), dict(mpoles=[(4, 2)])]   # components the search may add
+MODEL_CANDIDATES = [dict(bcg=True), dict(halo="gnfw"),
+                    dict(mpoles=[(3, 2)]), dict(mpoles=[(4, 2)])]   # components the search may add (no shear)
 MAX_ADDITIONS = 3                 # at most this many components are added to the base model
 BIC_SELECT = True                 # also add a component to a passing model if it lowers the BIC by > BIC_MIN_DROP
 BIC_MIN_DROP = 10.0
@@ -251,14 +257,17 @@ MAG_CAP = 0.0                     # 0 = glafic's exact source-plane chi2 (do not
 POS_ERR0 = 0.4                    # catalogue positional error [arcsec], before rescaling
 CALIBRATE_ERRORS = True           # rescale errors so that the fixed-cosmology best fit has chi2/dof = 1
 N_STARTS = 16                     # jittered L-BFGS starts for the MAP
+N_MAP_RUNS = jax.local_device_count()   # independent MAP runs (N_STARTS starts each), in parallel, one per GPU;
+                                        # the best is kept (less run-to-run scatter in the model choice)
 USE_NFW_ALPHA = True              # halo mass: sample log10 of the NFW deflection at R (straightens M-c)
 NFW_ALPHA_R = None                # [arcsec]; None = median image distance from the BCG
 NFW_ALPHA_ZS = None               # source z for the deflection; None = median z_s
 COSMO_REPARAM = {"wa": ("sum_below", "weos", -3.0, 2.0, 0.0)}   # DESI: wa in [-3, 2], w0 + wa < 0
 W_PRIOR = "desi"                  # tag of the w0/wa prior in the chain file names (w0 in [-3, 1]: prior file)
 W_MAX_WCDM = 0.0                  # wCDM: w < W_MAX_WCDM, the w0waCDM cut w0 + wa < 0 at wa = 0 (None: prior file)
-NUTS_KW = dict(num_chains=4, num_warmup=1000, num_samples=1000, target_accept=0.95,
-               max_tree_depth=10, init="map", init_jitter=0.01, use_approx_mass=False, chunk=250)
+NUTS_KW = dict(num_chains=4, num_warmup=1000, num_samples=5000, target_accept=0.95,
+               max_tree_depth=10, init="map", init_jitter=0.01, use_approx_mass=False, chunk=100,
+               rhat_target=1.01)   # sample in chunks of 100 until max R-hat < 1.01 (num_samples: the cap)
 MODELS = ["lcdm", "wcdm", "w0wa"]   # cosmologies to sample in stage B (finished ones are loaded from disk)
 SMOKE_TEST = False                # tiny runs, to check that the notebook works end to end
 
@@ -559,7 +568,11 @@ md(r"""
 
 1. **Best fit.** Minimise the source-plane χ² over the lens parameters and
    photometric redshifts, with source positions profiled, from `N_STARTS`
-   jittered starts.
+   jittered starts. The fit is repeated `N_MAP_RUNS` times with independent
+   starts (by default once per GPU, the runs in parallel) and the best run is
+   kept, so the model choice depends less on the luck of one set of starts.
+   The best χ² of every run is saved in `calib.json` (`chi2_runs`), and the
+   model search prints its spread (`MAP runs Δχ²`).
 2. **Error calibration.** All images share one positional error σ, and the
    χ² scales as 1/σ². Setting σ = σ₀ √(χ²/dof) makes χ²/dof = 1 exactly,
    without changing the best fit.
@@ -594,7 +607,7 @@ def fit_setup(d, cfg, tag, n_starts=N_STARTS):
     pipe = gj.Pipeline(m, reparam=halo_reparam(cfg))
     for k, (ns, jit) in enumerate([(n_starts, 0.5), (4 * n_starts, 1.0), (8 * n_starts, 1.5)]):
         try:
-            r = pipe.map(n_starts=ns, jitter=jit, seed=k, verbose=False)
+            r = pipe.map(n_starts=ns, jitter=jit, seed=k, n_runs=N_MAP_RUNS, verbose=False)
             break
         except ValueError as err:
             print(f"MAP attempt {k + 1}: {err}; retrying with more, wider starts")
@@ -608,7 +621,7 @@ def fit_setup(d, cfg, tag, n_starts=N_STARTS):
     nobs = 2 * sum(o["tab"].shape[0] for o in m.obs_point)
     npar = sum(n.startswith("lens") or n.endswith("_zs") for n in m.theta_names)
     out = dict(cluster=CLUSTER, tag=tag, model=cfg, cap=MAG_CAP, sigma=float(sig), chi2_raw=float(r["chi2"]),
-               dof=int(dof), nobs=int(nobs), npar=int(npar), lens=np.asarray(P["lens"]).tolist(),
+               dof=int(dof), nobs=int(nobs), npar=int(npar), chi2_runs=[float(x) for x in r["chi2_runs"]], lens=np.asarray(P["lens"]).tolist(),
                poi=np.asarray(P["point"]).tolist(), parity=parity, parity_notes=notes)
     json.dump(out, open(f, "w"))
     return out
@@ -632,7 +645,9 @@ def evaluate(cfg):
     chk = image_check(m, m.params(), c["sigma"])
     e = dict(cfg=cfg, tag=tag, dir=d, calib=c, ok=chk["ok"], fails=chk["fails"], missing=len(chk["missing"]),
              max_off=chk["max_off"], bad=chk["bad"])
+    runs = [x for x in c.get("chi2_runs", []) if np.isfinite(x)]   # best chi2 of each parallel MAP run
     print(f"   {tag:55s} chi2 {c['chi2_raw']:8.2f}  {c['npar']:3d} par  BIC {bic(e):8.2f}  "
+          + (f"MAP runs Δχ² {max(runs) - min(runs):6.2f}  " if len(runs) > 1 else "")
           + ("passes" if e["ok"] else "FAILS: " + "; ".join(e["fails"])) + f"  ({time.time() - t0:.0f} s)")
     return e
 
@@ -823,6 +838,11 @@ the source positions marginalised. The priors are flat:
 Each orientation angle is restricted to one period around the best fit
 (`gj.angle_bounds`). Chains start near the stage-A best fit, at Ω_m = 0.3,
 w = −1, wa = 0, and the dense mass matrix is adapted during warmup.
+
+With several GPUs the chains are spread over them: one chain per GPU when
+`num_chains` ≤ the number of GPUs (e.g. 4 chains on a 4-GPU node), otherwise
+equal groups of chains, one group per GPU. On one GPU all chains run
+together, in one batch.
 
 Healthy output: few divergences, R-hat < 1.01–1.02, ESS of a few hundred or
 more. If the median number of gradient evaluations per sample is

@@ -373,33 +373,80 @@ class Pipeline:
         return -2.0 * float(jax.jit(lambda t: self.log_prob(t, **kw))(jnp.asarray(theta)))
 
     # ------------------------------------------------------------------
-    def map(self, theta0=None, n_starts=1, jitter=0.1, maxiter=3000, restarts=5, seed=0, verbose=True, **kw):
+    def map(self, theta0=None, n_starts=1, jitter=0.1, maxiter=3000, restarts=5, seed=0, verbose=True,
+            n_runs=1, devices=None, **kw):
         """Minimum chi^2 (= MAP for flat priors) in the unconstrained space.
 
         ``n_starts > 1`` adds starting points jittered by ``jitter`` (in
         unconstrained units) around ``theta0``; the best result is kept.
+
+        ``n_runs > 1`` repeats the whole fit ``n_runs`` times with independent
+        seeds (``n_starts`` starts each; only the first run includes the
+        unjittered ``theta0``) and keeps the best run.  The runs are spread
+        over ``devices`` (default: all local devices, e.g. the GPUs of a node)
+        and run concurrently, one thread per device.  ``out["chi2_runs"]``
+        holds the best chi^2 of every run (inf: no valid start), a measure of
+        how reproducible the fit is.
         """
-        from scipy.optimize import minimize
         self._refresh()
-        m = self.model
-        theta0 = self.clip_inside(m.theta0() if theta0 is None else theta0)
+        theta0 = self.clip_inside(self.model.theta0() if theta0 is None else theta0)
         z0 = np.asarray(self.to_z(theta0))
-        pen = 0.5 * m.settings.chi2pen_range
         lp_kw = {**self.lp_kw, **kw}
+        t0 = time.time()
+        if n_runs <= 1:
+            runs = [self._map_run(z0, n_starts, jitter, maxiter, restarts, np.random.default_rng(seed), True,
+                                  lp_kw, verbose, "")]
+        else:
+            from concurrent.futures import ThreadPoolExecutor
+            devs = list(jax.local_devices() if devices is None else devices)[:n_runs]
+
+            def on_device(i):
+                # runs i, i + len(devs), ... on device devs[i]
+                out = []
+                with jax.default_device(devs[i]):
+                    for r in range(i, n_runs, len(devs)):
+                        rng = np.random.default_rng(seed if r == 0 else (seed, r))
+                        out.append((r, self._map_run(z0, n_starts, jitter, maxiter, restarts, rng, r == 0,
+                                                     lp_kw, verbose, f" run {r} ({devs[i]})")))
+                return out
+
+            if verbose:
+                print(f"[MAP] {n_runs} runs x {n_starts} starts on {len(devs)} device(s)")
+            with ThreadPoolExecutor(max_workers=len(devs)) as ex:
+                done = [x for f in [ex.submit(on_device, i) for i in range(len(devs))] for x in f.result()]
+            runs = [b for _, b in sorted(done, key=lambda t: t[0])]
+        chi2_runs = [np.inf if b is None else float(b[1]) for b in runs]
+        valid = [b for b in runs if b is not None]
+        if not valid:
+            raise ValueError("no valid starting point for MAP")
+        best = min(valid, key=lambda b: b[1])
+        theta = self.to_theta(jnp.asarray(best[0]))
+        out = dict(theta=np.asarray(theta), chi2=best[1], z=np.asarray(best[0]), names=self.names,
+                   chi2_runs=chi2_runs, time=time.time() - t0)
+        if verbose:
+            print(f"[MAP] best chi2 = {best[1]:.6g}  ({out['time']:.0f} s)"
+                  + (f"; runs: {', '.join(f'{c:.6g}' for c in chi2_runs)}" if n_runs > 1 else ""))
+        self.results["map"] = out
+        return out
+
+    def _map_run(self, z0, n_starts, jitter, maxiter, restarts, rng, center, lp_kw, verbose, tag):
+        """One MAP fit (L-BFGS-B from n_starts starts) on the current default device.
+        Returns (z, chi2) of its best start, or None if no start was valid."""
+        from scipy.optimize import minimize
+        m = self.model
+        pen = 0.5 * m.settings.chi2pen_range
 
         def chi2_z(z):
             return m.chi2(m.unflatten(self.to_theta(z)), **lp_kw)
 
         vg = jax.jit(jax.value_and_grad(chi2_z))
-        rng = np.random.default_rng(seed)
         best = None
-        t0 = time.time()
         for s in range(n_starts):
-            z = z0 if s == 0 else z0 + jitter * rng.standard_normal(z0.shape)
+            z = z0 if (s == 0 and center) else z0 + jitter * rng.standard_normal(z0.shape)
             c2 = float(vg(jnp.asarray(z))[0])
             if not (np.isfinite(c2) and c2 < pen):
                 if verbose:
-                    print(f"[MAP] start {s}: invalid starting point, skipped")
+                    print(f"[MAP{tag}] start {s}: invalid starting point, skipped")
                 continue
             for _ in range(restarts):
                 norm = max(c2, 1.0)
@@ -421,18 +468,10 @@ class Pipeline:
                 if done:
                     break
             if verbose:
-                print(f"[MAP] start {s}: chi2 = {c2:.6g}")
+                print(f"[MAP{tag}] start {s}: chi2 = {c2:.6g}")
             if best is None or c2 < best[1]:
-                best = (z, c2)
-        if best is None:
-            raise ValueError("no valid starting point for MAP")
-        theta = self.to_theta(jnp.asarray(best[0]))
-        out = dict(theta=np.asarray(theta), chi2=best[1], z=np.asarray(best[0]), names=self.names,
-                   time=time.time() - t0)
-        if verbose:
-            print(f"[MAP] best chi2 = {best[1]:.6g}  ({out['time']:.0f} s)")
-        self.results["map"] = out
-        return out
+                best = (np.asarray(z), c2)
+        return best
 
     def set_map(self, theta, **kw):
         """Use an externally obtained best fit as the MAP result."""
@@ -560,7 +599,8 @@ class Pipeline:
     def hmc(self, theta0=None, num_warmup=1000, num_samples=1000, num_chains=4, seed=0, target_accept=0.9,
             dense_mass=True, use_approx_mass=True, adapt_mass_matrix=True, max_tree_depth=10,
             chain_method=None, init_spread=0.5, approx_tol=None, init="approx", init_jitter=0.01,
-            checkpoint=None, chunk=None, progress_bar=True, verbose=True, **kw):
+            checkpoint=None, chunk=None, rhat_target=None, min_samples=0, progress_bar=True, verbose=True,
+            **kw):
         """NUTS, warm-started from the best Gaussian approximation.
 
         ``init="map"`` ignores the Laplace/SVI approximations for the starting
@@ -574,6 +614,18 @@ class Pipeline:
         state is saved after warm-up and after every ``chunk`` samples; calling
         ``hmc`` again with the same ``checkpoint`` continues from there (useful
         for batch jobs with time limits).
+
+        ``rhat_target`` (e.g. 1.01) stops sampling early: after every
+        ``chunk`` samples (and at least ``min_samples``) the split R-hat of
+        every parameter is computed from all samples so far, and sampling
+        stops once the largest is below ``rhat_target``; ``num_samples`` is
+        then the maximum.  The stop is recorded in the checkpoint.
+
+        ``chain_method=None`` picks one: for a pure-JAX likelihood the chains
+        are spread over the local devices (one per GPU, or equal vectorized
+        groups per GPU when there are more chains than GPUs; see
+        ``_multi_device``), and on one device they run vectorized; otherwise
+        'sequential'.
 
         Chains start from independent draws of SVI (if its median chi^2 is
         within ``approx_tol`` of the MAP, default ``5 + ndim``) or of the
@@ -618,7 +670,7 @@ class Pipeline:
         if chain_method is None:
             has_point = any(o is not None for o in self.model.obs_point)
             pure = (not has_point) or self.model.settings.chi2_splane == 1 or lp_kw.get("point_mode") == "tracked"
-            chain_method = "vectorized" if (pure and num_chains > 1) else "sequential"
+            chain_method = _multi_device(num_chains) if (pure and num_chains > 1) else "sequential"
         mcmc = MCMC(kernel, num_warmup=num_warmup, num_samples=num_samples, num_chains=num_chains,
                     chain_method=chain_method, progress_bar=progress_bar)
         init_params = None
@@ -627,17 +679,27 @@ class Pipeline:
             init_params = {s: jnp.asarray([biject_to(c).inv(v[k]) for v in vs])
                            for k, (s, c) in enumerate(zip(self.site, self.constraints))}
         if verbose:
-            print(f"[HMC] initialised from {src or 'MAP'}; {num_chains} chain(s), method={chain_method}")
+            how = getattr(chain_method, "__name__", chain_method)
+            print(f"[HMC] initialised from {src or 'MAP'}; {num_chains} chain(s), method={how}")
         t0 = time.time()
+        stop = None
+        if rhat_target is not None and num_chains > 1:
+            from numpyro.diagnostics import split_gelman_rubin
+
+            def stop(smp_so_far):
+                th = np.asarray(self._theta_from_sites(smp_so_far))
+                if th.shape[1] < max(4, min_samples):      # split R-hat needs a few samples per chain
+                    return None
+                return float(np.nanmax(np.asarray(split_gelman_rubin(th)))), rhat_target
         smp, ex = _run_chunked(mcmc, jax.random.PRNGKey(seed), init_params, num_samples, chunk, checkpoint,
-                               ("potential_energy", "diverging", "num_steps"), verbose)
+                               ("potential_energy", "diverging", "num_steps"), verbose, stop)
         theta = np.asarray(self._theta_from_sites(smp))
         lp = np.asarray(jax.jit(jax.vmap(jax.vmap(lambda t: self.log_prob(t, **kw))))(jnp.asarray(theta)))
         out = dict(theta=theta, log_prob=lp, diverging=np.asarray(ex["diverging"]), names=self.names,
                    num_steps=np.asarray(ex["num_steps"]), mcmc=mcmc, init=src, time=time.time() - t0)
         if verbose:
             n = out["diverging"].size
-            print(f"[HMC] {num_chains} x {num_samples} samples, {int(out['diverging'].sum())}/{n} divergent "
+            print(f"[HMC] {num_chains} x {theta.shape[1]} samples, {int(out['diverging'].sum())}/{n} divergent "
                   f"({out['time']:.0f} s); median {np.median(out['num_steps']):.0f} leapfrog steps/sample")
         self.results["hmc"] = out
         return out
@@ -709,12 +771,46 @@ class Pipeline:
         return az.from_dict(posterior=post)
 
 
-def _run_chunked(mcmc, key, init_params, num_samples, chunk, ckpt, extra_fields, verbose):
+def _multi_device(num_chains, devices=None):
+    """NumPyro chain_method that spreads num_chains pure-JAX chains over the local devices.
+
+    One device: 'vectorized' (all chains in one batch).  At most one chain per
+    device: 'parallel' (pmap).  More chains than devices: the chains are split
+    into equal groups, one per device, each run vectorized (pmap of vmap; the
+    progress bar is then off).  When no group count divides num_chains, falls
+    back to 'vectorized' on one device.
+    """
+    devs = list(jax.local_devices() if devices is None else devices)
+    if len(devs) <= 1:
+        return "vectorized"
+    if num_chains <= len(devs):
+        return "parallel"
+    nd = max(d for d in range(1, len(devs) + 1) if num_chains % d == 0)
+    if nd == 1:
+        return "vectorized"
+    devs = devs[:nd]
+
+    def split(x):
+        return x.reshape((nd, x.shape[0] // nd) + x.shape[1:])
+
+    def merge(x):
+        return x.reshape((x.shape[0] * x.shape[1],) + x.shape[2:])
+
+    def run(fn):
+        pm = jax.pmap(jax.vmap(fn), devices=devs)
+        return lambda args: jax.tree_util.tree_map(merge, pm(jax.tree_util.tree_map(split, args)))
+
+    run.__name__ = f"{nd} devices x {num_chains // nd} vectorized"
+    return run
+
+
+def _run_chunked(mcmc, key, init_params, num_samples, chunk, ckpt, extra_fields, verbose, stop=None):
     """Warm-up, then sampling in chunks with an optional on-disk checkpoint.
-    Returns (samples, extra_fields) grouped by chain, as numpy arrays."""
+    ``stop(samples so far)`` returns None (not enough samples yet) or (max R-hat, target); sampling ends
+    early once R-hat < target.  Returns (samples, extra_fields) grouped by chain, as numpy arrays."""
     import os
     import pickle
-    if ckpt is None and chunk is None:
+    if ckpt is None and chunk is None and stop is None:
         mcmc.run(key, init_params=init_params, extra_fields=extra_fields)
         return (jax.device_get(mcmc.get_samples(group_by_chain=True)),
                 jax.device_get(mcmc.get_extra_fields(group_by_chain=True)) if extra_fields else {})
@@ -739,7 +835,27 @@ def _run_chunked(mcmc, key, init_params, num_samples, chunk, ckpt, extra_fields,
         save()
         if verbose:
             print("[checkpoint] warm-up finished" + (f", saved to {ckpt}" if ckpt else ""))
-    while st["done"] < num_samples:
+    cat = lambda parts: {k: np.concatenate([np.asarray(p[k]) for p in parts], axis=1) for k in parts[0]}
+
+    def converged():
+        # R-hat check on all samples so far (also on resuming, so a finished run is not extended)
+        if st.get("converged"):
+            return True
+        if stop is None or not st["samples"]:
+            return False
+        r = stop(cat(st["samples"]))
+        if r is None:
+            return False
+        if verbose:
+            print(f"[R-hat] {st['done']} samples: max R-hat = {r[0]:.4f} (target < {r[1]:g})")
+        if r[0] < r[1]:
+            st["converged"] = True
+            save()
+            if verbose:
+                print(f"[R-hat] converged; stopping at {st['done']}/{num_samples} samples")
+        return bool(st.get("converged"))
+
+    while st["done"] < num_samples and not converged():
         n = min(chunk, num_samples - st["done"])
         mcmc.num_samples = n
         state = jax.tree_util.tree_map(jnp.asarray, st["state"])
@@ -752,7 +868,11 @@ def _run_chunked(mcmc, key, init_params, num_samples, chunk, ckpt, extra_fields,
         save()
         if verbose and chunk < num_samples:
             print(f"[checkpoint] {st['done']}/{num_samples} samples")
-    cat = lambda parts: {k: np.concatenate([np.asarray(p[k]) for p in parts], axis=1) for k in parts[0]}
+    if stop is not None and st["done"] >= num_samples and not st.get("converged"):
+        r = stop(cat(st["samples"]))
+        if verbose and r is not None:
+            print(f"[R-hat] reached num_samples = {num_samples} with max R-hat = {r[0]:.4f} "
+                  f"(target < {r[1]:g} not met)")
     return cat(st["samples"]), (cat(st["extras"]) if extra_fields else {})
 
 
