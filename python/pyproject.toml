@@ -16,7 +16,7 @@ dependencies = ["jax>=0.4.30", "numpy", "scipy"]
 
 [project.optional-dependencies]
 fits = ["astropy"]
-hmc = ["numpyro", "blackjax"]
+hmc = ["numpyro", "blackjax", "cloudpickle"]   # cloudpickle: parallel MAP runs, one process per GPU
 test = ["pytest", "astropy"]
 
 [tool.setuptools]

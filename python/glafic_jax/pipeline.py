@@ -55,6 +55,7 @@ The model's settings may be changed between stages (e.g. fixing cosmology
 in a first MAP); each stage uses the model state at the time it is called.
 """
 
+import os
 import time
 
 import numpy as np
@@ -374,7 +375,7 @@ class Pipeline:
 
     # ------------------------------------------------------------------
     def map(self, theta0=None, n_starts=1, jitter=0.1, maxiter=3000, restarts=5, seed=0, verbose=True,
-            n_runs=1, devices=None, **kw):
+            n_runs=1, devices=None, workers="process", **kw):
         """Minimum chi^2 (= MAP for flat priors) in the unconstrained space.
 
         ``n_starts > 1`` adds starting points jittered by ``jitter`` (in
@@ -384,37 +385,58 @@ class Pipeline:
         seeds (``n_starts`` starts each; only the first run includes the
         unjittered ``theta0``) and keeps the best run.  The runs are spread
         over ``devices`` (default: all local devices, e.g. the GPUs of a node)
-        and run concurrently, one thread per device.  ``out["chi2_runs"]``
-        holds the best chi^2 of every run (inf: no valid start), a measure of
-        how reproducible the fit is.
+        and run concurrently.  With ``workers="process"`` (default) each device
+        gets its own Python process that sees only that GPU
+        (``CUDA_VISIBLE_DEVICES``), so the runs are truly parallel: the
+        optimiser loop is Python (scipy), and threads in one process would
+        mostly wait on each other.  This needs ``cloudpickle`` to send the
+        pipeline to the workers; without it, or if a worker fails, the runs
+        fall back to one thread per device (``workers="thread"``).
+
+        ``out["chi2_runs"]`` holds the best chi^2 of every run (inf: no valid
+        start), a measure of how reproducible the fit is;
+        ``out["run_devices"]`` and ``out["run_times"]`` where and how long
+        each run took, and ``out["workers"]`` how they ran.
         """
         self._refresh()
         theta0 = self.clip_inside(self.model.theta0() if theta0 is None else theta0)
         z0 = np.asarray(self.to_z(theta0))
         lp_kw = {**self.lp_kw, **kw}
         t0 = time.time()
-        if n_runs <= 1:
-            runs = [self._map_run(z0, n_starts, jitter, maxiter, restarts, np.random.default_rng(seed), True,
-                                  lp_kw, verbose, "")]
-        else:
+        args = (z0, n_starts, jitter, maxiter, restarts)
+        devs = list(jax.local_devices() if devices is None else devices)[:max(n_runs, 1)]
+        groups = [[(r, seed if r == 0 else (seed, r), r == 0) for r in range(i, n_runs, len(devs))]
+                  for i in range(len(devs))]                 # device i: runs i, i + len(devs), ...
+        done, how = None, "single"
+        if n_runs > 1 and len(devs) > 1 and workers == "process":
+            if verbose:
+                print(f"[MAP] {n_runs} runs x {n_starts} starts in {len(devs)} worker processes "
+                      f"({', '.join(map(str, devs))})")
+            try:
+                done, how = self._map_processes(devs, groups, args, lp_kw, verbose), "process"
+            except Exception as err:
+                print(f"[MAP] worker processes failed, running the {n_runs} runs in threads instead:\n{err}")
+        if done is None:
             from concurrent.futures import ThreadPoolExecutor
-            devs = list(jax.local_devices() if devices is None else devices)[:n_runs]
 
             def on_device(i):
-                # runs i, i + len(devs), ... on device devs[i]
                 out = []
                 with jax.default_device(devs[i]):
-                    for r in range(i, n_runs, len(devs)):
-                        rng = np.random.default_rng(seed if r == 0 else (seed, r))
-                        out.append((r, self._map_run(z0, n_starts, jitter, maxiter, restarts, rng, r == 0,
-                                                     lp_kw, verbose, f" run {r} ({devs[i]})")))
+                    for r, sd, center in groups[i]:
+                        t1 = time.time()
+                        b = self._map_run(*args, np.random.default_rng(sd), center, lp_kw, verbose,
+                                          f" run {r} ({devs[i]})" if n_runs > 1 else "")
+                        out.append((r, b, str(devs[i]), time.time() - t1))
                 return out
 
-            if verbose:
-                print(f"[MAP] {n_runs} runs x {n_starts} starts on {len(devs)} device(s)")
+            if n_runs > 1:
+                how = "thread"
+                if verbose:
+                    print(f"[MAP] {n_runs} runs x {n_starts} starts in threads on {len(devs)} device(s)")
             with ThreadPoolExecutor(max_workers=len(devs)) as ex:
                 done = [x for f in [ex.submit(on_device, i) for i in range(len(devs))] for x in f.result()]
-            runs = [b for _, b in sorted(done, key=lambda t: t[0])]
+        done.sort(key=lambda t: t[0])
+        runs = [b for _, b, _, _ in done]
         chi2_runs = [np.inf if b is None else float(b[1]) for b in runs]
         valid = [b for b in runs if b is not None]
         if not valid:
@@ -422,12 +444,63 @@ class Pipeline:
         best = min(valid, key=lambda b: b[1])
         theta = self.to_theta(jnp.asarray(best[0]))
         out = dict(theta=np.asarray(theta), chi2=best[1], z=np.asarray(best[0]), names=self.names,
-                   chi2_runs=chi2_runs, time=time.time() - t0)
+                   chi2_runs=chi2_runs, run_devices=[d for _, _, d, _ in done],
+                   run_times=[t for _, _, _, t in done], workers=how, time=time.time() - t0)
         if verbose:
-            print(f"[MAP] best chi2 = {best[1]:.6g}  ({out['time']:.0f} s)"
-                  + (f"; runs: {', '.join(f'{c:.6g}' for c in chi2_runs)}" if n_runs > 1 else ""))
+            if n_runs > 1:
+                for (r, _, d, t), c in zip(done, chi2_runs):
+                    print(f"[MAP] run {r} on {d}: chi2 = {c:.6g} ({t:.0f} s)")
+            print(f"[MAP] best chi2 = {best[1]:.6g}  ({out['time']:.0f} s)")
         self.results["map"] = out
         return out
+
+    def _map_processes(self, devs, groups, args, lp_kw, verbose):
+        """Run the MAP runs of groups[i] in a separate process on devs[i] (see map); returns
+        [(run, (z, chi2) or None, device, seconds)]."""
+        import copy
+        import os
+        import shutil
+        import subprocess
+        import sys
+        import tempfile
+        import cloudpickle
+        p = copy.copy(self)
+        p.results = {}                                   # only the model and the parameterisation
+        blob = cloudpickle.dumps(p)
+        path = [d for d in sys.path if d and os.path.isdir(d)]   # e.g. a repository copy of glafic_jax
+        path += [os.environ["PYTHONPATH"]] if os.environ.get("PYTHONPATH") else []
+        tmp = tempfile.mkdtemp(prefix="glafic_map_")
+        try:
+            procs = []
+            for i, (d, runs) in enumerate(zip(devs, groups)):
+                task, res, logf = (os.path.join(tmp, f"{k}{i}") for k in ("task", "result", "log"))
+                with open(task, "wb") as f:
+                    cloudpickle.dump(dict(pipe=blob, runs=runs, args=args, lp_kw=lp_kw, verbose=verbose), f)
+                env = dict(os.environ, PYTHONPATH=os.pathsep.join(path), XLA_PYTHON_CLIENT_PREALLOCATE="false",
+                           JAX_ENABLE_X64="1" if jax.config.jax_enable_x64 else "0")
+                if d.platform in ("gpu", "cuda"):
+                    env["CUDA_VISIBLE_DEVICES"] = _physical_gpu(d)
+                with open(logf, "w") as lf:
+                    procs.append((subprocess.Popen([sys.executable, "-m", "glafic_jax._mapworker", task, res],
+                                                   env=env, stdout=lf, stderr=subprocess.STDOUT), res, logf, d))
+            done, errors = [], []
+            for proc, res, logf, d in procs:
+                proc.wait()
+                if verbose or proc.returncode != 0 or not os.path.exists(res):
+                    txt = open(logf).read().strip()
+                    if proc.returncode != 0 or not os.path.exists(res):
+                        errors.append(f"worker on {d} (exit code {proc.returncode}):\n" + "\n".join(
+                            txt.splitlines()[-20:]))
+                    elif txt:
+                        print(txt)
+                if os.path.exists(res):
+                    with open(res, "rb") as f:
+                        done += cloudpickle.load(f)
+            if errors:
+                raise RuntimeError("\n".join(errors))
+            return done
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
     def _map_run(self, z0, n_starts, jitter, maxiter, restarts, rng, center, lp_kw, verbose, tag):
         """One MAP fit (L-BFGS-B from n_starts starts) on the current default device.
@@ -769,6 +842,14 @@ class Pipeline:
         th = r["theta"] if r["theta"].ndim == 3 else r["theta"][None]
         post = {n: th[..., k] for k, n in enumerate(self.names)}
         return az.from_dict(posterior=post)
+
+
+def _physical_gpu(device):
+    """The CUDA_VISIBLE_DEVICES entry of a local GPU device (its id as the driver knows it)."""
+    hw = getattr(device, "local_hardware_id", None)
+    hw = device.id if hw is None else hw
+    vis = [v.strip() for v in os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",") if v.strip()]
+    return vis[hw] if hw < len(vis) else str(hw)
 
 
 def _multi_device(num_chains, devices=None):

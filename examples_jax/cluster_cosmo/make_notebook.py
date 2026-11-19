@@ -509,6 +509,9 @@ def fit_setup(d, cfg, tag, n_starts=N_STARTS):
             print(f"MAP attempt {k + 1}: {err}; retrying with more, wider starts")
     else:
         raise RuntimeError("MAP failed from every start")
+    if len(r["chi2_runs"]) > 1:   # where the parallel MAP runs ran: one line per fit, in the log
+        print(f"      MAP: {len(r['chi2_runs'])} runs ({r['workers']}) on {', '.join(sorted(set(r['run_devices'])))}: "
+              f"chi2 {', '.join(f'{c:.2f}' for c in r['chi2_runs'])}  ({r['time']:.0f} s)")
     P = m.best_sources(m.unflatten(jnp.asarray(r["theta"])))
     # parities: read off the best fit (zero penalty there) or set by hand
     parity, notes = auto_parity(m, P) if PARITY == "auto" else (dict(PARITY), [])
